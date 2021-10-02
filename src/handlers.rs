@@ -1,11 +1,19 @@
-use axum::{extract::Multipart, http::StatusCode};
+use axum::{
+    extract::{ContentLengthLimit, Multipart},
+    http::StatusCode,
+};
 
 pub async fn ping() -> &'static str {
     "pong"
 }
 
-pub async fn upload(mut multipart: Multipart) -> Result<&'static str, StatusCode> {
-    while let Ok(field) = multipart.next_field().await {
+// 10MiB
+const CONTENT_LENGTH_LIMIT: u64 = 10 * 1024 * 1024;
+
+pub async fn upload(
+    mut multipart: ContentLengthLimit<Multipart, CONTENT_LENGTH_LIMIT>,
+) -> Result<&'static str, StatusCode> {
+    while let Ok(field) = multipart.0.next_field().await {
         if let Some(field) = field {
             let name = {
                 if let Some(name) = field.name() {
