@@ -7,3 +7,4 @@ edition = "2018"
 
 [dependencies]
 yew = "0.18.0"
+gloo-file = "0.1.0"
