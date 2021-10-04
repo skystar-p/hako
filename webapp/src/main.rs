@@ -119,7 +119,7 @@ impl Component for Model {
                         id="passphrase"
                         type="password"
                         ref={self.passphrase_ref.clone()}
-                        class=classes!("px-4", "py-2", "rounded-lg", "border", "border-gray-300", "focus:outline-none", "focus:ring-2", "focus:ring-gray-200")
+                        class=classes!("px-4", "py-2", "rounded-lg", "border", "border-gray-300", "focus:outline-none", "focus:ring-2", "focus:ring-gray-200", "text-center")
                         placeholder={ "Passphrase" }
                         hidden={passphrase_hidden}
                         oninput={passphrase_oninput}
