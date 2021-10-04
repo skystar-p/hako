@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::convert::TryInto;
 
 use chacha20poly1305::aead::{Aead, NewAead};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
@@ -20,7 +21,7 @@ enum Msg {
     PassphraseInput,
     UploadStart,
     FileReaded(String, Vec<u8>),
-    UploadComplete,
+    UploadComplete(),
 }
 
 struct Model {
@@ -154,12 +155,12 @@ impl Component for Model {
 
                 // generate key by hkdf
                 let h = Hkdf::<Sha256>::new(Some(&salt), passphrase.as_bytes());
-                let mut key = [0u8; 32];
-                if let Err(err) = h.expand(&[], &mut key[..]) {
+                let mut key_slice = [0u8; 32];
+                if let Err(err) = h.expand(&[], &mut key_slice[..]) {
                     log::error!("cannot expand passphrase by hkdf: {:?}", err);
                     return false;
                 }
-                log::info!("key: {:?}", key);
+                log::info!("key: {:?}", key_slice);
 
                 // generate nonce for XChaCha20Poly1305
                 let mut nonce = [0u8; 24];
@@ -169,7 +170,7 @@ impl Component for Model {
                     return false;
                 }
 
-                let key = Key::from_slice(&key);
+                let key = Key::from_slice(&key_slice);
                 let cipher = XChaCha20Poly1305::new(key);
                 let xnonce = XNonce::from_slice(&nonce);
 
@@ -220,7 +221,7 @@ impl Component for Model {
                                     resp.status()
                                 );
                             } else {
-                                clink.send_message(Msg::UploadComplete);
+                                clink.send_message(Msg::UploadComplete());
                             }
                         }
                         Err(err) => {
@@ -229,38 +230,99 @@ impl Component for Model {
                     }
                 });
 
-                // this is test code
-                /*
-                let decrypted = cipher.decrypt(nonce, encrypted.as_ref()).unwrap();
-                log::info!("decrypted: {:?}", decrypted);
-
-                let bytes = Array::new();
-                bytes.push(&Uint8Array::from(&decrypted[..]));
-                let decrypted_blob = {
-                    match web_sys::Blob::new_with_u8_array_sequence(&bytes) {
-                        Ok(blob) => blob,
-                        Err(err) => {
-                            log::error!("failed to make data into blob: {:?}", err);
-                            return true;
-                        }
-                    }
-                };
-                let obj_url = {
-                    match Url::create_object_url_with_blob(&decrypted_blob) {
-                        Ok(u) => u,
-                        Err(err) => {
-                            log::error!("failed to make blob into object url: {:?}", err);
-                            return true;
-                        }
-                    }
-                };
-                log::info!("obj_url: {}", obj_url);
-                */
-
                 true
             }
-            Msg::UploadComplete => {
+            Msg::UploadComplete() => {
                 log::info!("upload success!");
+
+                // this is test code
+                // http client
+                let passphrase = if let Some(input) = self.passphrase_ref.cast::<HtmlInputElement>()
+                {
+                    input.value()
+                } else {
+                    log::error!("cannot get passphrase string from input");
+                    return false;
+                };
+                let client = reqwest::Client::new();
+                spawn_local(async move {
+                    let res = match client.get("http://localhost:12321/1").send().await {
+                        Ok(resp) => {
+                            if resp.status() != StatusCode::OK {
+                                log::error!(
+                                    "request failed: server responded with {}",
+                                    resp.status()
+                                );
+                                return;
+                            } else {
+                                resp.bytes().await
+                            }
+                        }
+                        Err(err) => {
+                            log::error!("failed to download: {:?}", err);
+                            return;
+                        }
+                    };
+
+                    // TODO: match
+                    let res = res.unwrap().to_vec();
+                    // extract all fields
+                    let content_len = u64::from_be_bytes(res[0..8].try_into().unwrap());
+                    let filename_len = u64::from_be_bytes(res[8..16].try_into().unwrap());
+                    log::info!("content_len = {}", content_len);
+                    log::info!("filename_len = {}", filename_len);
+                    let res = &res[16..];
+
+                    let salt = &res[..32];
+                    log::info!("salt = {:?}", salt);
+                    let res = &res[32..];
+
+                    let nonce = &res[..24];
+                    log::info!("nonce = {:?}", nonce);
+                    let res = &res[24..];
+
+                    let filename = &res[..(filename_len as usize)];
+                    let content = &res[(filename_len as usize)..];
+
+                    let h = Hkdf::<Sha256>::new(Some(&salt), passphrase.as_bytes());
+                    let mut key_slice = [0u8; 32];
+                    if let Err(err) = h.expand(&[], &mut key_slice[..]) {
+                        log::error!("cannot expand passphrase by hkdf: {:?}", err);
+                        return;
+                    }
+
+                    let key = Key::from_slice(&key_slice);
+                    let cipher = XChaCha20Poly1305::new(key);
+                    let xnonce = XNonce::from_slice(nonce);
+
+                    let decrypted_filename = cipher.decrypt(xnonce, filename).unwrap();
+                    log::info!("decrypted filename: {:?}", decrypted_filename);
+                    let decrypted_content = cipher.decrypt(xnonce, content).unwrap();
+                    log::info!("decrypted content: {:?}", decrypted_content);
+
+                    let bytes = Array::new();
+                    bytes.push(&Uint8Array::from(&decrypted_content[..]));
+                    let decrypted_blob = {
+                        match web_sys::Blob::new_with_u8_array_sequence(&bytes) {
+                            Ok(blob) => blob,
+                            Err(err) => {
+                                log::error!("failed to make data into blob: {:?}", err);
+                                return;
+                            }
+                        }
+                    };
+                    let obj_url = {
+                        match Url::create_object_url_with_blob(&decrypted_blob) {
+                            Ok(u) => u,
+                            Err(err) => {
+                                log::error!("failed to make blob into object url: {:?}", err);
+                                return;
+                            }
+                        }
+                    };
+                    log::info!("obj_url: {}", obj_url);
+                });
+
                 true
             }
         }
