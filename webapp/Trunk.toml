@@ -3,6 +3,9 @@ target = "index.html"
 release = false
 dist = "dist"
 
+# [[proxy]]
+# backend = "http://localhost:12321/"
+
 [[hooks]]
 stage = "pre_build"
 command = "sh"
