@@ -5,9 +5,11 @@ use axum::{
     AddExtensionLayer, Router,
 };
 use deadpool_postgres::Config;
+use simple_logger::SimpleLogger;
 use state::State;
 use structopt::StructOpt;
 use tokio_postgres::NoTls;
+use tower_http::trace::TraceLayer;
 
 mod config;
 mod handlers;
@@ -15,6 +17,10 @@ mod state;
 
 #[tokio::main]
 async fn main() {
+    SimpleLogger::new()
+        .with_level(log::LevelFilter::Info)
+        .init()
+        .unwrap();
     let config = config::Config::from_args();
 
     // setup database connetion pool
@@ -23,7 +29,7 @@ async fn main() {
     db_config.port = Some(5432);
     db_config.user = Some("skystar".into());
     db_config.password = Some("skystar".into());
-    db_config.dbname = Some("skystar".into());
+    db_config.dbname = Some("hako".into());
 
     let pool = db_config.create_pool(NoTls).unwrap();
 
@@ -32,6 +38,7 @@ async fn main() {
     let app = Router::new()
         .route("/ping", get(handlers::ping))
         .route("/upload", post(handlers::upload))
+        .layer(TraceLayer::new_for_http())
         .layer(AddExtensionLayer::new(shared_state));
 
     let addr: SocketAddr = config.bind_addr.parse().expect("invalid bind addr");

@@ -54,6 +54,7 @@ pub async fn upload(
                 "salt" => {
                     // salt should have 16 bytes length
                     if bytes.len() != 16 {
+                        log::error!("invalid salt length: {}", bytes.len());
                         return Err(StatusCode::BAD_REQUEST);
                     }
                     salt = Some(bytes);
@@ -61,6 +62,7 @@ pub async fn upload(
                 "nonce" => {
                     // nonce should have 24 bytes length
                     if bytes.len() != 24 {
+                        log::error!("invalid nonce length: {}", bytes.len());
                         return Err(StatusCode::BAD_REQUEST);
                     }
                     nonce = Some(bytes);
@@ -81,29 +83,35 @@ pub async fn upload(
     let pool = &state.0.pool;
 
     let mut client = {
-        if let Ok(client) = pool.get().await {
-            client
-        } else {
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        match pool.get().await {
+            Ok(client) => client,
+            Err(err) => {
+                log::error!("could not get client from pool: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
         }
     };
 
     // make transaction object
     let tx = {
-        if let Ok(tx) = client.transaction().await {
-            tx
-        } else {
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        match client.transaction().await {
+            Ok(tx) => tx,
+            Err(err) => {
+                log::error!("could not build transaction object: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
         }
     };
 
     // prepare statement
     let query = "insert into files (content, filename, salt, nonce) values ($1, $2, $3, $4)";
     let stmt = {
-        if let Ok(stmt) = tx.prepare(query).await {
-            stmt
-        } else {
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        match tx.prepare(query).await {
+            Ok(stmt) => stmt,
+            Err(err) => {
+                log::error!("could not prepare statement: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
         }
     };
 
@@ -119,11 +127,13 @@ pub async fn upload(
             ],
         )
         .await;
-    if result.is_err() {
+    if let Err(err) = result {
+        log::error!("failed to query: {:?}", err);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
     // commit
-    if tx.commit().await.is_err() {
+    if let Err(err) = tx.commit().await {
+        log::error!("failed to commit: {:?}", err);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
