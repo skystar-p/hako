@@ -52,8 +52,8 @@ pub async fn upload(
 
             match name.as_ref() {
                 "salt" => {
-                    // salt should have 16 bytes length
-                    if bytes.len() != 16 {
+                    // salt should have 32 bytes length
+                    if bytes.len() != 32 {
                         log::error!("invalid salt length: {}", bytes.len());
                         return Err(StatusCode::BAD_REQUEST);
                     }
