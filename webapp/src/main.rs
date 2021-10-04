@@ -21,7 +21,7 @@ fn file_input(comp: &Model) -> Html {
     let file_onchange = comp.link.batch_callback(|e| {
         if let ChangeData::Files(files) = e {
             let file = files.item(0);
-            file.map(|file| Msg::FileChanged(file))
+            file.map(Msg::FileChanged)
         } else {
             None
         }
