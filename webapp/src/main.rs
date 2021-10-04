@@ -1,20 +1,28 @@
+use std::collections::HashMap;
+
+use chacha20poly1305::aead::{Aead, NewAead};
+use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
+use gloo_file::callbacks::FileReader;
+use gloo_file::File;
+use hkdf::Hkdf;
+use sha2::Sha256;
 use yew::{
-    classes, html,
-    web_sys::{File, HtmlInputElement},
-    ChangeData, Component, ComponentLink, Html, NodeRef,
+    classes, html, web_sys::HtmlInputElement, ChangeData, Component, ComponentLink, Html, NodeRef,
 };
 
 enum Msg {
-    FileChanged(File),
+    FileChanged(web_sys::File),
     PassphraseInput,
     Upload,
+    FileReaded(String, Vec<u8>),
 }
 
 struct Model {
     link: ComponentLink<Self>,
-    selected_file: Option<File>,
+    selected_file: Option<web_sys::File>,
     passphrase_ref: NodeRef,
     passphrase_available: bool,
+    readers: HashMap<String, FileReader>,
 }
 
 fn file_input(comp: &Model) -> Html {
@@ -50,6 +58,7 @@ impl Component for Model {
             selected_file: None,
             passphrase_ref: NodeRef::default(),
             passphrase_available: false,
+            readers: HashMap::default(),
         }
     }
 
@@ -74,6 +83,107 @@ impl Component for Model {
                 if !self.passphrase_available {
                     return false;
                 }
+                let file = if let Some(file) = &self.selected_file {
+                    File::from(file.clone())
+                } else {
+                    return false;
+                };
+
+                // read file
+                let filename = file.name();
+
+                let clink = self.link.clone();
+                let fname = filename.clone();
+                let task = gloo_file::callbacks::read_as_bytes(&file, move |res| match res {
+                    Ok(res) => clink.send_message(Msg::FileReaded(fname, res)),
+                    Err(err) => {
+                        log::error!("failed to read file content: {:?}", err)
+                    }
+                });
+                self.readers.insert(filename, task);
+
+                // TODO: show status: loading file
+                true
+            }
+            Msg::FileReaded(filename, res) => {
+                if self.readers.remove(&filename).is_none() {
+                    // TODO: show failed status and reset state
+                    return true;
+                }
+
+                // get passphrase from input
+                let passphrase = if let Some(input) = self.passphrase_ref.cast::<HtmlInputElement>()
+                {
+                    input.value()
+                } else {
+                    log::error!("cannot get passphrase string from input");
+                    return false;
+                };
+
+                // prepare crypto instance
+                let window = {
+                    if let Some(window) = web_sys::window() {
+                        window
+                    } else {
+                        log::error!("cannot retrieve Window instance");
+                        return false;
+                    }
+                };
+                let crypto = match window.crypto() {
+                    Ok(crypto) => crypto,
+                    Err(err) => {
+                        log::error!("cannot retrieve Crypto instance: {:?}", err);
+                        return false;
+                    }
+                };
+
+                // generate salt for hkdf expand()
+                let mut salt = [0u8; 32];
+                let rand_res = crypto.get_random_values_with_u8_array(&mut salt);
+                if let Err(err) = rand_res {
+                    log::error!("cannot get random salt value: {:?}", err);
+                    return false;
+                }
+                log::info!("salt: {:?}", salt);
+
+                // generate key by hkdf
+                let h = Hkdf::<Sha256>::new(Some(&salt), passphrase.as_bytes());
+                let mut key = [0u8; 32];
+                if let Err(err) = h.expand(&[], &mut key[..]) {
+                    log::error!("cannot expand passphrase by hkdf: {:?}", err);
+                    return false;
+                }
+                log::info!("key: {:?}", key);
+
+                // generate nonce for XChaCha20Poly1305
+                let mut nonce = [0u8; 24];
+                let rand_res = crypto.get_random_values_with_u8_array(&mut nonce);
+                if let Err(err) = rand_res {
+                    log::error!("cannot get random nonce value: {:?}", err);
+                    return false;
+                }
+
+                let key = Key::from_slice(&key);
+                let cipher = XChaCha20Poly1305::new(key);
+                let nonce = XNonce::from_slice(&nonce);
+
+                let encrypted = {
+                    match cipher.encrypt(nonce, res.as_ref()) {
+                        Ok(encrypted) => encrypted,
+                        Err(err) => {
+                            log::error!("failed to encrypt data: {:?}", err);
+                            return true;
+                        }
+                    }
+                };
+
+                log::info!("nonce: {:?}", nonce);
+                log::info!("encrypted: {:?}", encrypted);
+
+                // this is test code
+                let decrypted = cipher.decrypt(nonce, encrypted.as_ref()).unwrap();
+                log::info!("decrypted: {:?}", decrypted);
+
                 true
             }
         }
@@ -112,7 +222,7 @@ impl Component for Model {
                 </h1>
                 { file_input(self) }
                 <div class=classes!("flex", "justify-center", "mt-5")>
-                    <p class=classes!("text-gray-300", "mb-3")>{ self.selected_file.as_ref().map_or("".into(), |f: &File| f.name()) }</p>
+                    <p class=classes!("text-gray-300", "mb-3")>{ self.selected_file.as_ref().map_or("".into(), |f: &web_sys::File| f.name()) }</p>
                 </div>
                 <div class=classes!("flex", "justify-center")>
                     <input
