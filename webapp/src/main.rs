@@ -6,7 +6,10 @@ use gloo_file::callbacks::FileReader;
 use gloo_file::File;
 use hkdf::Hkdf;
 use js_sys::{Array, Uint8Array};
+use reqwest::multipart::Part;
+use reqwest::StatusCode;
 use sha2::Sha256;
+use wasm_bindgen_futures::spawn_local;
 use web_sys::Url;
 use yew::{
     classes, html, web_sys::HtmlInputElement, ChangeData, Component, ComponentLink, Html, NodeRef,
@@ -15,8 +18,9 @@ use yew::{
 enum Msg {
     FileChanged(web_sys::File),
     PassphraseInput,
-    Upload,
+    UploadStart,
     FileReaded(String, Vec<u8>),
+    UploadComplete,
 }
 
 struct Model {
@@ -81,7 +85,7 @@ impl Component for Model {
                 }
                 true
             }
-            Msg::Upload => {
+            Msg::UploadStart => {
                 if !self.passphrase_available {
                     return false;
                 }
@@ -167,10 +171,11 @@ impl Component for Model {
 
                 let key = Key::from_slice(&key);
                 let cipher = XChaCha20Poly1305::new(key);
-                let nonce = XNonce::from_slice(&nonce);
+                let xnonce = XNonce::from_slice(&nonce);
 
-                let encrypted = {
-                    match cipher.encrypt(nonce, res.as_ref()) {
+                // encrypt file content
+                let encrypted_content = {
+                    match cipher.encrypt(xnonce, res.as_ref()) {
                         Ok(encrypted) => encrypted,
                         Err(err) => {
                             log::error!("failed to encrypt data: {:?}", err);
@@ -178,11 +183,54 @@ impl Component for Model {
                         }
                     }
                 };
+                // encrypt filename
+                let encrypted_filename = {
+                    match cipher.encrypt(xnonce, filename.bytes().collect::<Vec<u8>>().as_ref()) {
+                        Ok(encrypted) => encrypted,
+                        Err(err) => {
+                            log::error!("failed to encrypt filename: {:?}", err);
+                            return true;
+                        }
+                    }
+                };
 
-                log::info!("nonce: {:?}", nonce);
-                log::info!("encrypted: {:?}", encrypted);
+                log::info!("nonce: {:?}", xnonce);
+                log::info!("encrypted: {:?}", encrypted_content);
+
+                // http client
+                let client = reqwest::Client::new();
+                let form = reqwest::multipart::Form::new()
+                    .part("content", Part::bytes(encrypted_content))
+                    .part("nonce", Part::bytes(nonce.to_vec()))
+                    .part("salt", Part::bytes(salt.to_vec()))
+                    .part("filename", Part::bytes(encrypted_filename.to_vec()));
+
+                let clink = self.link.clone();
+                spawn_local(async move {
+                    match client
+                        .post("http://localhost:12321/upload")
+                        .multipart(form)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => {
+                            if resp.status() != StatusCode::OK {
+                                log::error!(
+                                    "request failed: server responded with {}",
+                                    resp.status()
+                                );
+                            } else {
+                                clink.send_message(Msg::UploadComplete);
+                            }
+                        }
+                        Err(err) => {
+                            log::error!("failed to send multipart request: {:?}", err);
+                        }
+                    }
+                });
 
                 // this is test code
+                /*
                 let decrypted = cipher.decrypt(nonce, encrypted.as_ref()).unwrap();
                 log::info!("decrypted: {:?}", decrypted);
 
@@ -207,7 +255,12 @@ impl Component for Model {
                     }
                 };
                 log::info!("obj_url: {}", obj_url);
+                */
 
+                true
+            }
+            Msg::UploadComplete => {
+                log::info!("upload success!");
                 true
             }
         }
@@ -218,7 +271,7 @@ impl Component for Model {
     }
 
     fn view(&self) -> Html {
-        let upload_onclick = self.link.callback(|_| Msg::Upload);
+        let upload_onclick = self.link.callback(|_| Msg::UploadStart);
         let passphrase_oninput = self.link.callback(|_| Msg::PassphraseInput);
         let passphrase_hidden = self.selected_file.is_none();
 
