@@ -12,7 +12,8 @@ hkdf = "0.11.0"
 js-sys = "0.3.55"
 log = "0.4.14"
 # See https://github.com/seanmonstar/reqwest/pull/1296
-reqwest = { git = "https://github.com/seanmonstar/reqwest", rev = "cf87893b17b37e03309e6eda8acf8f21956b10b1", features = ["multipart", "stream"] }
+# reqwest = { git = "https://github.com/seanmonstar/reqwest", rev = "cf87893b17b37e03309e6eda8acf8f21956b10b1", features = ["multipart", "stream"] }
+reqwest = { git = "https://github.com/skystar-p/reqwest", branch = "wasm_multipart", features = ["multipart"] }
 sha2 = "0.9.8"
 wasm-bindgen-futures = "0.4.28"
 wasm-logger = "0.2.0"
