@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use axum::{
-    body::Bytes,
-    extract::{ContentLengthLimit, Extension, Multipart},
+    body::{Body, Bytes},
+    extract::{ContentLengthLimit, Extension, Multipart, Path},
     http::StatusCode,
 };
 
@@ -138,4 +138,99 @@ pub async fn upload(
     }
 
     Ok("ok")
+}
+
+pub async fn download(
+    state: Extension<Arc<State>>,
+    Path(id): Path<String>,
+) -> Result<Body, StatusCode> {
+    if id.is_empty() {
+        log::error!("empty id is not allowed");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let id: i64 = {
+        match id.parse() {
+            Ok(id) => id,
+            Err(_) => {
+                log::error!("invalid id");
+                return Err(StatusCode::BAD_REQUEST);
+            }
+        }
+    };
+
+    let pool = &state.0.pool;
+
+    let client = {
+        match pool.get().await {
+            Ok(client) => client,
+            Err(err) => {
+                log::error!("could not get client from pool: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    };
+
+    // prepare statement
+    let query = "select content, filename, salt, nonce from files where id = $1";
+    let stmt = {
+        match client.prepare(query).await {
+            Ok(stmt) => stmt,
+            Err(err) => {
+                log::error!("could not prepare statement: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    };
+
+    // query file
+    let result = {
+        match client.query(&stmt, &[&id]).await {
+            Ok(result) => result,
+            Err(err) => {
+                log::error!("failed to query: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    };
+    // validate query result
+    if result.is_empty() {
+        log::error!("file not found: {}", id);
+        return Err(StatusCode::NOT_FOUND);
+    } else if result.len() != 1 {
+        log::error!("multiple file returned: {}", id);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    let result = &result[0];
+    if result.len() != 4 {
+        log::error!("invalid column length: {}", result.len());
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // extract fields
+    let mut content: Vec<u8> = result.get(0);
+    let mut filename: Vec<u8> = result.get(1);
+    let mut salt: Vec<u8> = result.get(2); // 32-byte
+    let mut nonce: Vec<u8> = result.get(3); // 24-byte
+
+    let mut content_len_bytes = (content.len() as u64).to_be_bytes().to_vec();
+    let mut filename_len_bytes = (filename.len() as u64).to_be_bytes().to_vec();
+
+    // build response
+    let mut body = Vec::<u8>::with_capacity(
+        content_len_bytes.len()
+            + filename_len_bytes.len()
+            + content.len()
+            + filename.len()
+            + salt.len()
+            + nonce.len(),
+    );
+    body.append(&mut content_len_bytes);
+    body.append(&mut filename_len_bytes);
+    body.append(&mut salt);
+    body.append(&mut nonce);
+    body.append(&mut filename);
+    body.append(&mut content);
+
+    Ok(Body::from(body))
 }
