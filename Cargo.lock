@@ -463,6 +463,7 @@ dependencies = [
  "chacha20poly1305",
  "gloo-file",
  "hkdf",
+ "js-sys",
  "log",
  "reqwest",
  "sha2",

@@ -5,7 +5,9 @@ use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use gloo_file::callbacks::FileReader;
 use gloo_file::File;
 use hkdf::Hkdf;
+use js_sys::{Array, Uint8Array};
 use sha2::Sha256;
+use web_sys::Url;
 use yew::{
     classes, html, web_sys::HtmlInputElement, ChangeData, Component, ComponentLink, Html, NodeRef,
 };
@@ -183,6 +185,28 @@ impl Component for Model {
                 // this is test code
                 let decrypted = cipher.decrypt(nonce, encrypted.as_ref()).unwrap();
                 log::info!("decrypted: {:?}", decrypted);
+
+                let bytes = Array::new();
+                bytes.push(&Uint8Array::from(&decrypted[..]));
+                let decrypted_blob = {
+                    match web_sys::Blob::new_with_u8_array_sequence(&bytes) {
+                        Ok(blob) => blob,
+                        Err(err) => {
+                            log::error!("failed to make data into blob: {:?}", err);
+                            return true;
+                        }
+                    }
+                };
+                let obj_url = {
+                    match Url::create_object_url_with_blob(&decrypted_blob) {
+                        Ok(u) => u,
+                        Err(err) => {
+                            log::error!("failed to make blob into object url: {:?}", err);
+                            return true;
+                        }
+                    }
+                };
+                log::info!("obj_url: {}", obj_url);
 
                 true
             }
