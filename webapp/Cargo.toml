@@ -6,7 +6,9 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+aead = { version = "0.4.3", features = ["stream"] }
 chacha20poly1305 = "0.9.0"
+futures-util = "0.3.17"
 gloo-file = "0.1.0"
 hkdf = "0.11.0"
 js-sys = "0.3.55"
@@ -14,7 +16,9 @@ log = "0.4.14"
 # See https://github.com/seanmonstar/reqwest/pull/1296 and https://github.com/seanmonstar/reqwest/pull/1341
 reqwest = { git = "https://github.com/seanmonstar/reqwest", rev = "6d682b53e246f9e982af81697bff0024b9fa82e3", features = ["multipart"] }
 sha2 = "0.9.8"
+wasm-bindgen = "0.2.78"
 wasm-bindgen-futures = "0.4.28"
 wasm-logger = "0.2.0"
-web-sys = { version = "0.3.55", features = ["Crypto", "Window", "Blob", "Url"] }
+wasm-streams = "0.2.1"
+web-sys = { version = "0.3.55", features = ["Crypto", "Window", "Blob", "Url", "ReadableStream"] }
 yew = "0.18.0"

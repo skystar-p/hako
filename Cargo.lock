@@ -601,15 +601,19 @@ dependencies = [
 name = "hako_webapp"
 version = "0.1.0"
 dependencies = [
+ "aead",
  "chacha20poly1305",
+ "futures-util",
  "gloo-file",
  "hkdf",
  "js-sys",
  "log",
  "reqwest",
  "sha2",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-logger",
+ "wasm-streams",
  "web-sys",
  "yew",
 ]
@@ -1961,6 +1965,19 @@ checksum = "074649a66bb306c8f2068c9016395fa65d8e08d2affcbf95acf3c24c3ab19718"
 dependencies = [
  "log",
  "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c9686ad57df75972718ccfe0b475515f64e2228955d97bd028debc6544851b8"
+dependencies = [
+ "futures",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 

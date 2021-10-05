@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
 
+use aead::generic_array::GenericArray;
 use chacha20poly1305::aead::{Aead, NewAead};
-use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
+use chacha20poly1305::{Key, Nonce, XChaCha20Poly1305, XNonce};
+use futures_util::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use gloo_file::callbacks::FileReader;
 use gloo_file::File;
 use hkdf::Hkdf;
@@ -10,6 +12,7 @@ use js_sys::{Array, Uint8Array};
 use reqwest::multipart::Part;
 use reqwest::StatusCode;
 use sha2::Sha256;
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::Url;
 use yew::{
@@ -22,6 +25,12 @@ enum Msg {
     UploadStart,
     FileReaded(String, Vec<u8>),
     UploadComplete(),
+}
+
+#[derive(Debug)]
+enum MyError {
+    JsValue(JsValue),
+    Aead(aead::Error),
 }
 
 struct Model {
@@ -91,32 +100,10 @@ impl Component for Model {
                     return false;
                 }
                 let file = if let Some(file) = &self.selected_file {
-                    File::from(file.clone())
+                    file
                 } else {
                     return false;
                 };
-
-                // read file
-                let filename = file.name();
-
-                let clink = self.link.clone();
-                let fname = filename.clone();
-                let task = gloo_file::callbacks::read_as_bytes(&file, move |res| match res {
-                    Ok(res) => clink.send_message(Msg::FileReaded(fname, res)),
-                    Err(err) => {
-                        log::error!("failed to read file content: {:?}", err)
-                    }
-                });
-                self.readers.insert(filename, task);
-
-                // TODO: show status: loading file
-                true
-            }
-            Msg::FileReaded(filename, res) => {
-                if self.readers.remove(&filename).is_none() {
-                    // TODO: show failed status and reset state
-                    return true;
-                }
 
                 // get passphrase from input
                 let passphrase = if let Some(input) = self.passphrase_ref.cast::<HtmlInputElement>()
@@ -163,7 +150,7 @@ impl Component for Model {
                 log::info!("key: {:?}", key_slice);
 
                 // generate nonce for XChaCha20Poly1305
-                let mut nonce = [0u8; 24];
+                let mut nonce = [0u8; 19];
                 let rand_res = crypto.get_random_values_with_u8_array(&mut nonce);
                 if let Err(err) = rand_res {
                     log::error!("cannot get random nonce value: {:?}", err);
@@ -172,63 +159,103 @@ impl Component for Model {
 
                 let key = Key::from_slice(&key_slice);
                 let cipher = XChaCha20Poly1305::new(key);
-                let xnonce = XNonce::from_slice(&nonce);
+                // let xnonce = XNonce::from_slice(&nonce);
 
-                // encrypt file content
-                let encrypted_content = {
-                    match cipher.encrypt(xnonce, res.as_ref()) {
-                        Ok(encrypted) => encrypted,
-                        Err(err) => {
-                            log::error!("failed to encrypt data: {:?}", err);
-                            return true;
-                        }
+                let xnonce = GenericArray::from_slice(nonce.as_ref());
+                let mut encryptor = aead::stream::EncryptorBE32::from_aead(cipher, xnonce);
+
+                let sys_stream = {
+                    if let Ok(s) = file.stream().dyn_into() {
+                        s
+                    } else {
+                        log::error!("file stream is not web_sys::ReadableStream");
+                        return false;
                     }
                 };
+
+                // read file
+                let filename = file.name();
+                let stream = wasm_streams::ReadableStream::from_raw(sys_stream).into_stream();
+
+                let fut = stream
+                    .and_then(|b| async move { b.dyn_into::<Uint8Array>() })
+                    .map_err(MyError::JsValue)
+                    .map_ok(|arr| arr.to_vec());
+                let mut fut = Box::pin(fut);
+
+                let encrypt = async move {
+                    let mut c: usize = 0;
+                    while let Some(v) = fut.try_next().await? {
+                        let res = encryptor.encrypt_next(v.as_ref()).map_err(MyError::Aead)?;
+                        c += res.len();
+                        log::info!("encrypted data: {:?}", res);
+                    }
+                    let res = encryptor
+                        .encrypt_last(Vec::new().as_ref())
+                        .map_err(MyError::Aead)?;
+                    c += res.len();
+                    log::info!("encrypted last data: {:?}", res);
+                    log::info!("total length: {}", c);
+
+                    Ok(())
+                };
+                spawn_local(encrypt.map(|r: Result<(), MyError>| {
+                    if let Err(e) = r {
+                        log::error!("encryption error: {:?}", e);
+                    }
+                }));
+
                 // encrypt filename
-                let encrypted_filename = {
-                    match cipher.encrypt(xnonce, filename.bytes().collect::<Vec<u8>>().as_ref()) {
-                        Ok(encrypted) => encrypted,
-                        Err(err) => {
-                            log::error!("failed to encrypt filename: {:?}", err);
-                            return true;
-                        }
-                    }
-                };
+                // let encrypted_filename = {
+                //     match cipher.encrypt(xnonce, filename.bytes().collect::<Vec<u8>>().as_ref()) {
+                //         Ok(encrypted) => encrypted,
+                //         Err(err) => {
+                //             log::error!("failed to encrypt filename: {:?}", err);
+                //             return true;
+                //         }
+                //     }
+                // };
 
-                log::info!("nonce: {:?}", xnonce);
-                log::info!("encrypted: {:?}", encrypted_content);
+                // TODO: show status: loading file
+                true
+            }
+            Msg::FileReaded(filename, res) => {
+                if self.readers.remove(&filename).is_none() {
+                    // TODO: show failed status and reset state
+                    return true;
+                }
 
-                // http client
-                let client = reqwest::Client::new();
-                let form = reqwest::multipart::Form::new()
-                    .part("content", Part::bytes(encrypted_content))
-                    .part("nonce", Part::bytes(nonce.to_vec()))
-                    .part("salt", Part::bytes(salt.to_vec()))
-                    .part("filename", Part::bytes(encrypted_filename.to_vec()));
+                // // http client
+                // let client = reqwest::Client::new();
+                // let form = reqwest::multipart::Form::new()
+                //     .part("content", Part::stream(encrypted_content))
+                //     .part("nonce", Part::stream(nonce.to_vec()))
+                //     .part("salt", Part::stream(salt.to_vec()))
+                //     .part("filename", Part::stream(encrypted_filename.to_vec()));
 
-                let clink = self.link.clone();
-                spawn_local(async move {
-                    match client
-                        .post("http://localhost:12321/upload")
-                        .multipart(form)
-                        .send()
-                        .await
-                    {
-                        Ok(resp) => {
-                            if resp.status() != StatusCode::OK {
-                                log::error!(
-                                    "request failed: server responded with {}",
-                                    resp.status()
-                                );
-                            } else {
-                                clink.send_message(Msg::UploadComplete());
-                            }
-                        }
-                        Err(err) => {
-                            log::error!("failed to send multipart request: {:?}", err);
-                        }
-                    }
-                });
+                // let clink = self.link.clone();
+                // spawn_local(async move {
+                //     match client
+                //         .post("http://localhost:12321/upload")
+                //         .multipart(form)
+                //         .send()
+                //         .await
+                //     {
+                //         Ok(resp) => {
+                //             if resp.status() != StatusCode::OK {
+                //                 log::error!(
+                //                     "request failed: server responded with {}",
+                //                     resp.status()
+                //                 );
+                //             } else {
+                //                 clink.send_message(Msg::UploadComplete());
+                //             }
+                //         }
+                //         Err(err) => {
+                //             log::error!("failed to send multipart request: {:?}", err);
+                //         }
+                //     }
+                // });
 
                 true
             }
