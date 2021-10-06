@@ -592,6 +592,8 @@ dependencies = [
  "axum",
  "deadpool-postgres",
  "log",
+ "serde",
+ "serde_json",
  "simple_logger",
  "structopt",
  "tokio",

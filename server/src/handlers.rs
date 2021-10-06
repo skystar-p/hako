@@ -1,10 +1,12 @@
-use std::sync::Arc;
+use std::{convert::TryInto, sync::Arc};
 
 use axum::{
     body::{Body, Bytes},
-    extract::{ContentLengthLimit, Extension, Multipart, Path},
+    extract::{ContentLengthLimit, Extension, Multipart},
     http::StatusCode,
+    response::Json,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::state::State;
 
@@ -12,17 +14,22 @@ pub async fn ping() -> &'static str {
     "pong"
 }
 
-// 100MiB
-const CONTENT_LENGTH_LIMIT: u64 = 100 * 1024 * 1024;
+// 10MiB
+const PREPARE_LENGTH_LIMIT: u64 = 10 * 1024 * 1024;
 
-pub async fn upload(
+#[derive(Serialize)]
+pub struct PrepareUploadResp {
+    id: i64,
+}
+
+pub async fn prepare_upload(
     state: Extension<Arc<State>>,
-    mut multipart: ContentLengthLimit<Multipart, CONTENT_LENGTH_LIMIT>,
-) -> Result<&'static str, StatusCode> {
+    mut multipart: ContentLengthLimit<Multipart, PREPARE_LENGTH_LIMIT>,
+) -> Result<Json<PrepareUploadResp>, StatusCode> {
     let mut salt: Option<Bytes> = None;
-    let mut nonce: Option<Bytes> = None;
+    let mut stream_nonce: Option<Bytes> = None;
+    let mut filename_nonce: Option<Bytes> = None;
     let mut filename: Option<Bytes> = None;
-    let mut content: Option<Bytes> = None;
 
     while let Ok(field) = multipart.0.next_field().await {
         if let Some(field) = field {
@@ -36,12 +43,14 @@ pub async fn upload(
 
             // check field name first, then read body
             match name.as_ref() {
-                "salt" | "nonce" | "filename" | "content" => {}
+                "salt" | "stream_nonce" | "filename_nonce" | "filename" => {}
                 _ => {
                     // unallowed part. ignore
                     continue;
                 }
             }
+
+            // now read some body
             let bytes = {
                 if let Ok(bytes) = field.bytes().await {
                     bytes
@@ -50,6 +59,7 @@ pub async fn upload(
                 }
             };
 
+            // check body validity
             match name.as_ref() {
                 "salt" => {
                     // salt should have 32 bytes length
@@ -59,25 +69,37 @@ pub async fn upload(
                     }
                     salt = Some(bytes);
                 }
-                "nonce" => {
-                    // nonce should have 24 bytes length
-                    if bytes.len() != 24 {
-                        log::error!("invalid nonce length: {}", bytes.len());
+                "stream_nonce" => {
+                    // stream nonce should have 19 bytes length
+                    if bytes.len() != 19 {
+                        log::error!("invalid stream nonce length: {}", bytes.len());
                         return Err(StatusCode::BAD_REQUEST);
                     }
-                    nonce = Some(bytes);
+                    stream_nonce = Some(bytes);
+                }
+                "filename_nonce" => {
+                    // filename nonce should have 24 bytes length
+                    if bytes.len() != 19 {
+                        log::error!("invalid filename nonce length: {}", bytes.len());
+                        return Err(StatusCode::BAD_REQUEST);
+                    }
+                    filename_nonce = Some(bytes);
                 }
                 "filename" => {
                     filename = Some(bytes);
-                }
-                "content" => {
-                    content = Some(bytes);
                 }
                 _ => {}
             }
         } else {
             break;
         }
+    }
+
+    if [&salt, &stream_nonce, &filename_nonce, &filename]
+        .iter()
+        .any(|o| o.is_none())
+    {
+        return Err(StatusCode::BAD_REQUEST);
     }
 
     let pool = &state.0.pool;
@@ -104,7 +126,7 @@ pub async fn upload(
     };
 
     // prepare statement
-    let query = "insert into files (content, filename, salt, nonce) values ($1, $2, $3, $4)";
+    let query = "insert into files (filename, salt, stream_nonce, filename_nonce) values ($1, $2, $3, $4) returning id";
     let stmt = {
         match tx.prepare(query).await {
             Ok(stmt) => stmt,
@@ -120,17 +142,191 @@ pub async fn upload(
         .query(
             &stmt,
             &[
-                &content.unwrap().to_vec(),
                 &filename.unwrap().to_vec(),
                 &salt.unwrap().to_vec(),
-                &nonce.unwrap().to_vec(),
+                &stream_nonce.unwrap().to_vec(),
+                &filename_nonce.unwrap().to_vec(),
             ],
         )
+        .await;
+
+    let id = match result {
+        Ok(rows) => {
+            if rows.is_empty() {
+                log::error!("id not returned");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            } else if rows.len() != 1 {
+                log::error!("multiple id returned");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+            if rows[0].len() != 1 {
+                log::error!("invalid column length");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+            let id: i64 = rows[0].get(0);
+            id
+        }
+        Err(err) => {
+            log::error!("failed to query: {:?}", err);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+    // commit
+    if let Err(err) = tx.commit().await {
+        log::error!("failed to commit: {:?}", err);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    Ok(Json(PrepareUploadResp { id }))
+}
+
+// 100MiB
+const UPLOAD_LENGTH_LIMIT: u64 = 100 * 1024 * 1024;
+
+pub async fn upload(
+    state: Extension<Arc<State>>,
+    mut multipart: ContentLengthLimit<Multipart, UPLOAD_LENGTH_LIMIT>,
+) -> Result<&'static str, StatusCode> {
+    let mut id: Option<Bytes> = None;
+    let mut seq: Option<Bytes> = None;
+    let mut is_last: Option<Bytes> = None;
+    let mut content: Option<Bytes> = None;
+
+    while let Ok(field) = multipart.0.next_field().await {
+        if let Some(field) = field {
+            let name = {
+                if let Some(name) = field.name() {
+                    name.to_owned()
+                } else {
+                    return Err(StatusCode::BAD_REQUEST);
+                }
+            };
+
+            // check field name first, then read body
+            match name.as_ref() {
+                "id" | "seq" | "is_last" | "content" => {}
+                _ => {
+                    // unallowed part. ignore
+                    continue;
+                }
+            }
+            let bytes = {
+                if let Ok(bytes) = field.bytes().await {
+                    bytes
+                } else {
+                    return Err(StatusCode::BAD_REQUEST);
+                }
+            };
+
+            match name.as_ref() {
+                "id" => {
+                    // id should have 8 bytes length
+                    if bytes.len() != 8 {
+                        log::error!("invalid id length: {}", bytes.len());
+                        return Err(StatusCode::BAD_REQUEST);
+                    }
+                    id = Some(bytes);
+                }
+                "seq" => {
+                    // seq should have 8 bytes length
+                    if bytes.len() != 8 {
+                        log::error!("invalid seq length: {}", bytes.len());
+                        return Err(StatusCode::BAD_REQUEST);
+                    }
+                    seq = Some(bytes);
+                }
+                "is_last" => {
+                    // is_last should have 1 bytes length
+                    if bytes.len() != 1 {
+                        log::error!("invalid is_last length: {}", bytes.len());
+                        return Err(StatusCode::BAD_REQUEST);
+                    }
+                    is_last = Some(bytes);
+                }
+                "content" => {
+                    content = Some(bytes);
+                }
+                _ => {}
+            }
+        } else {
+            break;
+        }
+    }
+
+    if [&id, &seq, &is_last, &content].iter().any(|o| o.is_none()) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let id = id.unwrap().to_vec().try_into().unwrap();
+    let id = i64::from_be_bytes(id);
+    let seq = seq.unwrap().to_vec().try_into().unwrap();
+    let seq = i64::from_be_bytes(seq);
+    let is_last = is_last.unwrap()[0] != 0;
+
+    let pool = &state.0.pool;
+
+    let mut client = {
+        match pool.get().await {
+            Ok(client) => client,
+            Err(err) => {
+                log::error!("could not get client from pool: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    };
+
+    // make transaction object
+    let tx = {
+        match client.transaction().await {
+            Ok(tx) => tx,
+            Err(err) => {
+                log::error!("could not build transaction object: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    };
+
+    // prepare statement
+    let query = "insert into file_contents (file_id, seq, content) values ($1, $2, $3)";
+    let stmt = {
+        match tx.prepare(query).await {
+            Ok(stmt) => stmt,
+            Err(err) => {
+                log::error!("could not prepare statement: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    };
+
+    // insert row
+    let result = tx
+        .query(&stmt, &[&id, &seq, &content.unwrap().to_vec()])
         .await;
     if let Err(err) = result {
         log::error!("failed to query: {:?}", err);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
+
+    if is_last {
+        // prepare statement
+        let query = "update files set upload_complete = true where id = $1";
+        let stmt = {
+            match tx.prepare(query).await {
+                Ok(stmt) => stmt,
+                Err(err) => {
+                    log::error!("could not prepare statement: {:?}", err);
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        };
+
+        // insert row
+        let result = tx.query(&stmt, &[&id]).await;
+        if let Err(err) = result {
+            log::error!("failed to query: {:?}", err);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
     // commit
     if let Err(err) = tx.commit().await {
         log::error!("failed to commit: {:?}", err);
@@ -140,23 +336,23 @@ pub async fn upload(
     Ok("ok")
 }
 
+#[derive(Deserialize)]
+pub struct DownloadPayload {
+    id: i64,
+    seq: i64,
+}
+
 pub async fn download(
     state: Extension<Arc<State>>,
-    Path(id): Path<String>,
+    Json(payload): axum::extract::Json<DownloadPayload>,
 ) -> Result<Body, StatusCode> {
-    if id.is_empty() {
-        log::error!("empty id is not allowed");
-        return Err(StatusCode::BAD_REQUEST);
+    let id = payload.id;
+    let seq = payload.seq;
+
+    if id <= 0 || seq <= 0 {
+        log::error!("id or seq should be positive");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
-    let id: i64 = {
-        match id.parse() {
-            Ok(id) => id,
-            Err(_) => {
-                log::error!("invalid id");
-                return Err(StatusCode::BAD_REQUEST);
-            }
-        }
-    };
 
     let pool = &state.0.pool;
 
@@ -171,7 +367,7 @@ pub async fn download(
     };
 
     // prepare statement
-    let query = "select content, filename, salt, nonce from files where id = $1";
+    let query = "select content from file_contents where file_id = $1 and seq = $2";
     let stmt = {
         match client.prepare(query).await {
             Ok(stmt) => stmt,
@@ -184,7 +380,7 @@ pub async fn download(
 
     // query file
     let result = {
-        match client.query(&stmt, &[&id]).await {
+        match client.query(&stmt, &[&id, &seq]).await {
             Ok(result) => result,
             Err(err) => {
                 log::error!("failed to query: {:?}", err);
@@ -194,43 +390,21 @@ pub async fn download(
     };
     // validate query result
     if result.is_empty() {
-        log::error!("file not found: {}", id);
+        log::error!("chunk not found: id={}, seq={}", id, seq);
         return Err(StatusCode::NOT_FOUND);
     } else if result.len() != 1 {
-        log::error!("multiple file returned: {}", id);
+        log::error!("multiple chunk returned: id={}, seq={}", id, seq);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     let result = &result[0];
-    if result.len() != 4 {
+    if result.len() != 1 {
         log::error!("invalid column length: {}", result.len());
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     // extract fields
-    let mut content: Vec<u8> = result.get(0);
-    let mut filename: Vec<u8> = result.get(1);
-    let mut salt: Vec<u8> = result.get(2); // 32-byte
-    let mut nonce: Vec<u8> = result.get(3); // 24-byte
+    let content: Vec<u8> = result.get(0);
 
-    let mut content_len_bytes = (content.len() as u64).to_be_bytes().to_vec();
-    let mut filename_len_bytes = (filename.len() as u64).to_be_bytes().to_vec();
-
-    // build response
-    let mut body = Vec::<u8>::with_capacity(
-        content_len_bytes.len()
-            + filename_len_bytes.len()
-            + content.len()
-            + filename.len()
-            + salt.len()
-            + nonce.len(),
-    );
-    body.append(&mut content_len_bytes);
-    body.append(&mut filename_len_bytes);
-    body.append(&mut salt);
-    body.append(&mut nonce);
-    body.append(&mut filename);
-    body.append(&mut content);
-
-    Ok(Body::from(body))
+    Ok(Body::from(content))
 }
