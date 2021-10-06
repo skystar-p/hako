@@ -182,8 +182,8 @@ impl Component for Model {
 
                 let mut fut = Box::pin(fut);
 
-                let stream_nonce = stream_nonce.clone();
-                let filename_nonce = filename_nonce.clone();
+                let stream_nonce = *stream_nonce;
+                let filename_nonce = *filename_nonce;
                 let encrypt = async move {
                     let mut encryptor =
                         aead::stream::EncryptorBE32::from_aead(cipher, &stream_nonce);
@@ -202,10 +202,10 @@ impl Component for Model {
                     {
                         Ok(resp) => {
                             if resp.status() != 200 {
-                                return Err(MyError::Remote(
-                                    format!("prepare_upload status != 200, but {}", resp.status())
-                                        .into(),
-                                ));
+                                return Err(MyError::Remote(format!(
+                                    "prepare_upload status != 200, but {}",
+                                    resp.status()
+                                )));
                             }
                             let b = {
                                 match resp.bytes().await {
@@ -240,53 +240,61 @@ impl Component for Model {
                         }
                     };
 
+                    const FLUSH_LIMIT: usize = 1024 * 1024 * 2;
+
                     let id = id.to_be_bytes();
                     let mut seq: i64 = 1;
+                    let mut buffer = Vec::<u8>::with_capacity(1024 * 1024);
                     while let Some(v) = fut.try_next().await? {
                         let chunk = encryptor.encrypt_next(v.as_ref()).map_err(MyError::Aead)?;
+                        buffer.extend(chunk);
 
-                        // upload chunk to server
-                        // this will block next encryption...
-                        // maybe there is more good way to handle this
-                        let id = id.to_vec();
-                        let seq_b = seq.to_be_bytes().to_vec();
-                        let form = Form::new()
-                            .part("id", Part::bytes(id))
-                            .part("seq", Part::bytes(seq_b))
-                            .part("is_last", Part::bytes(vec![0]))
-                            .part("content", Part::stream(chunk));
-                        match client
-                            .post(build_url("/upload"))
-                            .multipart(form)
-                            .send()
-                            .await
-                        {
-                            Ok(resp) => {
-                                if resp.status() != 200 {
-                                    return Err(MyError::Remote(
-                                        format!("upload status != 200, but {}", resp.status())
-                                            .into(),
-                                    ));
+                        if buffer.len() > FLUSH_LIMIT {
+                            // upload chunk to server
+                            // this will block next encryption...
+                            // maybe there is more good way to handle this
+                            let id = id.to_vec();
+                            let seq_b = seq.to_be_bytes().to_vec();
+                            let form = Form::new()
+                                .part("id", Part::bytes(id))
+                                .part("seq", Part::bytes(seq_b))
+                                .part("is_last", Part::bytes(vec![0]))
+                                .part("content", Part::stream(buffer.clone()));
+                            match client
+                                .post(build_url("/upload"))
+                                .multipart(form)
+                                .send()
+                                .await
+                            {
+                                Ok(resp) => {
+                                    if resp.status() != 200 {
+                                        return Err(MyError::Remote(format!(
+                                            "upload status != 200, but {}",
+                                            resp.status()
+                                        )));
+                                    }
+                                }
+                                Err(_) => {
+                                    return Err(MyError::Remote("failed to upload chunk".into()));
                                 }
                             }
-                            Err(_) => {
-                                return Err(MyError::Remote("failed to upload chunk".into()));
-                            }
+                            log::info!("chunk {} upload success", seq);
+                            buffer.clear();
+                            seq += 1;
                         }
-                        seq += 1;
-                        log::info!("chunk {} upload success", seq);
                     }
                     // upload last chunk
                     let chunk = encryptor
                         .encrypt_last(Vec::new().as_ref())
                         .map_err(MyError::Aead)?;
+                    buffer.extend(chunk);
                     let id = id.to_vec();
                     let seq_b = seq.to_be_bytes().to_vec();
                     let form = Form::new()
                         .part("id", Part::bytes(id))
                         .part("seq", Part::bytes(seq_b))
                         .part("is_last", Part::bytes(vec![1]))
-                        .part("content", Part::stream(chunk));
+                        .part("content", Part::stream(buffer));
                     match client
                         .post(build_url("/upload"))
                         .multipart(form)
@@ -295,9 +303,10 @@ impl Component for Model {
                     {
                         Ok(resp) => {
                             if resp.status() != 200 {
-                                return Err(MyError::Remote(
-                                    format!("upload status != 200, but {}", resp.status()).into(),
-                                ));
+                                return Err(MyError::Remote(format!(
+                                    "upload status != 200, but {}",
+                                    resp.status()
+                                )));
                             }
                         }
                         Err(_) => {
@@ -369,7 +378,7 @@ impl Component for Model {
                     let filename = &res[..(filename_len as usize)];
                     let content = &res[(filename_len as usize)..];
 
-                    let h = Hkdf::<Sha256>::new(Some(&salt), passphrase.as_bytes());
+                    let h = Hkdf::<Sha256>::new(Some(salt), passphrase.as_bytes());
                     let mut key_slice = [0u8; 32];
                     if let Err(err) = h.expand(&[], &mut key_slice[..]) {
                         log::error!("cannot expand passphrase by hkdf: {:?}", err);
