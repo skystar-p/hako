@@ -114,26 +114,9 @@ impl Component for Model {
                     return false;
                 };
 
-                // prepare crypto instance
-                let window = {
-                    if let Some(window) = web_sys::window() {
-                        window
-                    } else {
-                        log::error!("cannot retrieve Window instance");
-                        return false;
-                    }
-                };
-                let crypto = match window.crypto() {
-                    Ok(crypto) => crypto,
-                    Err(err) => {
-                        log::error!("cannot retrieve Crypto instance: {:?}", err);
-                        return false;
-                    }
-                };
-
                 // generate salt for hkdf expand()
                 let mut salt = [0u8; 32];
-                let rand_res = crypto.get_random_values_with_u8_array(&mut salt);
+                let rand_res = getrandom::getrandom(&mut salt);
                 if let Err(err) = rand_res {
                     log::error!("cannot get random salt value: {:?}", err);
                     return false;
@@ -151,7 +134,7 @@ impl Component for Model {
 
                 // generate nonce for XChaCha20Poly1305
                 let mut nonce = [0u8; 19];
-                let rand_res = crypto.get_random_values_with_u8_array(&mut nonce);
+                let rand_res = getrandom::getrandom(&mut nonce);
                 if let Err(err) = rand_res {
                     log::error!("cannot get random nonce value: {:?}", err);
                     return false;
