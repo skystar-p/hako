@@ -3,9 +3,12 @@ create table files (
     id bigserial primary key,
     created_at timestamp with time zone default now(),
     filename bytea not null,
-    salt bytea not null check (length(salt) = 32),
-    stream_nonce bytea not null check (length(stream_nonce) = 19),
-    filename_nonce bytea not null check (length(filename_nonce) = 24),
+    -- salt bytea not null check (length(salt) = 32),
+    -- stream_nonce bytea not null check (length(stream_nonce) = 19),
+    -- filename_nonce bytea not null check (length(filename_nonce) = 24),
+    salt bytea not null,
+    stream_nonce bytea not null,
+    filename_nonce bytea not null,
     upload_complete boolean not null default false
 );
 

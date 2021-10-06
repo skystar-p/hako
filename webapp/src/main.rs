@@ -3,6 +3,10 @@ use std::convert::TryInto;
 use aead::generic_array::GenericArray;
 use chacha20poly1305::aead::{Aead, NewAead};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
+//use aes_gcm_siv::aead::{Aead, NewAead};
+//use aes_gcm_siv::{Aes256GcmSiv, Key, Nonce};
+// use xsalsa20poly1305::aead::{Aead, NewAead};
+// use xsalsa20poly1305::{XSalsa20Poly1305, Key, Nonce};
 use futures_util::{FutureExt, TryStreamExt};
 use hkdf::Hkdf;
 use js_sys::{Array, Uint8Array};
@@ -41,6 +45,11 @@ struct Model {
 const BASE_URL: &str = "http://localhost:12321";
 fn build_url(relative: &str) -> String {
     format!("{}{}", BASE_URL, relative)
+}
+
+fn get_timestamp() -> u64 {
+    let now = js_sys::Date::new_0();
+    now.get_time() as u64
 }
 
 fn file_input(comp: &Model) -> Html {
@@ -171,6 +180,8 @@ impl Component for Model {
                         }
                     }
                 };
+
+                log::info!("start timestamp: {}", get_timestamp());
 
                 // read file
                 let stream = wasm_streams::ReadableStream::from_raw(sys_stream).into_stream();
@@ -314,6 +325,7 @@ impl Component for Model {
                         }
                     }
                     log::info!("last chunk {} upload success", seq);
+                    log::info!("end timestamp: {}", get_timestamp());
 
                     Ok(())
                 };
@@ -327,8 +339,6 @@ impl Component for Model {
                 true
             }
             Msg::UploadComplete => {
-                log::info!("upload success!");
-
                 // this is test code
                 // http client
                 let passphrase = if let Some(input) = self.passphrase_ref.cast::<HtmlInputElement>()
@@ -359,62 +369,62 @@ impl Component for Model {
                     };
 
                     // TODO: match
-                    let res = res.unwrap().to_vec();
-                    // extract all fields
-                    let content_len = u64::from_be_bytes(res[0..8].try_into().unwrap());
-                    let filename_len = u64::from_be_bytes(res[8..16].try_into().unwrap());
-                    log::info!("content_len = {}", content_len);
-                    log::info!("filename_len = {}", filename_len);
-                    let res = &res[16..];
+                    // let res = res.unwrap().to_vec();
+                    // // extract all fields
+                    // let content_len = u64::from_be_bytes(res[0..8].try_into().unwrap());
+                    // let filename_len = u64::from_be_bytes(res[8..16].try_into().unwrap());
+                    // log::info!("content_len = {}", content_len);
+                    // log::info!("filename_len = {}", filename_len);
+                    // let res = &res[16..];
 
-                    let salt = &res[..32];
-                    log::info!("salt = {:?}", salt);
-                    let res = &res[32..];
+                    // let salt = &res[..32];
+                    // log::info!("salt = {:?}", salt);
+                    // let res = &res[32..];
 
-                    let nonce = &res[..24];
-                    log::info!("nonce = {:?}", nonce);
-                    let res = &res[24..];
+                    // let nonce = &res[..24];
+                    // log::info!("nonce = {:?}", nonce);
+                    // let res = &res[24..];
 
-                    let filename = &res[..(filename_len as usize)];
-                    let content = &res[(filename_len as usize)..];
+                    // let filename = &res[..(filename_len as usize)];
+                    // let content = &res[(filename_len as usize)..];
 
-                    let h = Hkdf::<Sha256>::new(Some(salt), passphrase.as_bytes());
-                    let mut key_slice = [0u8; 32];
-                    if let Err(err) = h.expand(&[], &mut key_slice[..]) {
-                        log::error!("cannot expand passphrase by hkdf: {:?}", err);
-                        return;
-                    }
+                    // let h = Hkdf::<Sha256>::new(Some(salt), passphrase.as_bytes());
+                    // let mut key_slice = [0u8; 32];
+                    // if let Err(err) = h.expand(&[], &mut key_slice[..]) {
+                    //     log::error!("cannot expand passphrase by hkdf: {:?}", err);
+                    //     return;
+                    // }
 
-                    let key = Key::from_slice(&key_slice);
-                    let cipher = XChaCha20Poly1305::new(key);
-                    let xnonce = XNonce::from_slice(nonce);
+                    // let key = Key::from_slice(&key_slice);
+                    // let cipher = XChaCha20Poly1305::new(key);
+                    // let xnonce = XNonce::from_slice(nonce);
 
-                    let decrypted_filename = cipher.decrypt(xnonce, filename).unwrap();
-                    log::info!("decrypted filename: {:?}", decrypted_filename);
-                    let decrypted_content = cipher.decrypt(xnonce, content).unwrap();
-                    log::info!("decrypted content: {:?}", decrypted_content);
+                    // let decrypted_filename = cipher.decrypt(xnonce, filename).unwrap();
+                    // log::info!("decrypted filename: {:?}", decrypted_filename);
+                    // let decrypted_content = cipher.decrypt(xnonce, content).unwrap();
+                    // log::info!("decrypted content: {:?}", decrypted_content);
 
-                    let bytes = Array::new();
-                    bytes.push(&Uint8Array::from(&decrypted_content[..]));
-                    let decrypted_blob = {
-                        match web_sys::Blob::new_with_u8_array_sequence(&bytes) {
-                            Ok(blob) => blob,
-                            Err(err) => {
-                                log::error!("failed to make data into blob: {:?}", err);
-                                return;
-                            }
-                        }
-                    };
-                    let obj_url = {
-                        match Url::create_object_url_with_blob(&decrypted_blob) {
-                            Ok(u) => u,
-                            Err(err) => {
-                                log::error!("failed to make blob into object url: {:?}", err);
-                                return;
-                            }
-                        }
-                    };
-                    log::info!("obj_url: {}", obj_url);
+                    // let bytes = Array::new();
+                    // bytes.push(&Uint8Array::from(&decrypted_content[..]));
+                    // let decrypted_blob = {
+                    //     match web_sys::Blob::new_with_u8_array_sequence(&bytes) {
+                    //         Ok(blob) => blob,
+                    //         Err(err) => {
+                    //             log::error!("failed to make data into blob: {:?}", err);
+                    //             return;
+                    //         }
+                    //     }
+                    // };
+                    // let obj_url = {
+                    //     match Url::create_object_url_with_blob(&decrypted_blob) {
+                    //         Ok(u) => u,
+                    //         Err(err) => {
+                    //             log::error!("failed to make blob into object url: {:?}", err);
+                    //             return;
+                    //         }
+                    //     }
+                    // };
+                    // log::info!("obj_url: {}", obj_url);
                 });
 
                 true

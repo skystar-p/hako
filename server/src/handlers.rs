@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::State;
 
+const SALT_LENGTH: usize = 32;
+const STREAM_NONCE_SIZE: usize = 19;
+const FILENAME_NONCE_SIZE: usize = 24;
+
 pub async fn ping() -> &'static str {
     "pong"
 }
@@ -62,24 +66,24 @@ pub async fn prepare_upload(
             // check body validity
             match name.as_ref() {
                 "salt" => {
-                    // salt should have 32 bytes length
-                    if bytes.len() != 32 {
+                    // salt should have SALT_LENGTH bytes length
+                    if bytes.len() != SALT_LENGTH {
                         log::error!("invalid salt length: {}", bytes.len());
                         return Err(StatusCode::BAD_REQUEST);
                     }
                     salt = Some(bytes);
                 }
                 "stream_nonce" => {
-                    // stream nonce should have 19 bytes length
-                    if bytes.len() != 19 {
+                    // stream nonce should have STREAM_NONCE_SIZE bytes length
+                    if bytes.len() != STREAM_NONCE_SIZE {
                         log::error!("invalid stream nonce length: {}", bytes.len());
                         return Err(StatusCode::BAD_REQUEST);
                     }
                     stream_nonce = Some(bytes);
                 }
                 "filename_nonce" => {
-                    // filename nonce should have 24 bytes length
-                    if bytes.len() != 24 {
+                    // filename nonce should have FILENAME_NONCE_SIZE bytes length
+                    if bytes.len() != FILENAME_NONCE_SIZE {
                         log::error!("invalid filename nonce length: {}", bytes.len());
                         return Err(StatusCode::BAD_REQUEST);
                     }
