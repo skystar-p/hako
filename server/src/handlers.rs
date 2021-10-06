@@ -79,7 +79,7 @@ pub async fn prepare_upload(
                 }
                 "filename_nonce" => {
                     // filename nonce should have 24 bytes length
-                    if bytes.len() != 19 {
+                    if bytes.len() != 24 {
                         log::error!("invalid filename nonce length: {}", bytes.len());
                         return Err(StatusCode::BAD_REQUEST);
                     }
