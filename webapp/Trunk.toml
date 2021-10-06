@@ -5,6 +5,7 @@ dist = "dist"
 
 # [[proxy]]
 # backend = "http://localhost:12321/"
+# rewrite = "/api"
 
 [[hooks]]
 stage = "pre_build"

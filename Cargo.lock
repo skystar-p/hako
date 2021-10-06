@@ -614,6 +614,8 @@ dependencies = [
  "js-sys",
  "log",
  "reqwest",
+ "serde",
+ "serde_json",
  "sha2",
  "wasm-bindgen",
  "wasm-bindgen-futures",

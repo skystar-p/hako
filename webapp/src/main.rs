@@ -1,16 +1,14 @@
-use std::collections::HashMap;
 use std::convert::TryInto;
 
 use aead::generic_array::GenericArray;
 use chacha20poly1305::aead::{Aead, NewAead};
-use chacha20poly1305::{Key, Nonce, XChaCha20Poly1305, XNonce};
-use futures_util::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
-use gloo_file::callbacks::FileReader;
-use gloo_file::File;
+use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
+use futures_util::{FutureExt, TryStreamExt};
 use hkdf::Hkdf;
 use js_sys::{Array, Uint8Array};
-use reqwest::multipart::Part;
+use reqwest::multipart::{Form, Part};
 use reqwest::StatusCode;
+use serde_json::Value;
 use sha2::Sha256;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
@@ -23,14 +21,14 @@ enum Msg {
     FileChanged(web_sys::File),
     PassphraseInput,
     UploadStart,
-    FileReaded(String, Vec<u8>),
-    UploadComplete(),
+    UploadComplete,
 }
 
 #[derive(Debug)]
 enum MyError {
     JsValue(JsValue),
     Aead(aead::Error),
+    Remote(String),
 }
 
 struct Model {
@@ -38,7 +36,11 @@ struct Model {
     selected_file: Option<web_sys::File>,
     passphrase_ref: NodeRef,
     passphrase_available: bool,
-    readers: HashMap<String, FileReader>,
+}
+
+const BASE_URL: &str = "http://localhost:12321";
+fn build_url(relative: &str) -> String {
+    format!("{}{}", BASE_URL, relative)
 }
 
 fn file_input(comp: &Model) -> Html {
@@ -74,7 +76,6 @@ impl Component for Model {
             selected_file: None,
             passphrase_ref: NodeRef::default(),
             passphrase_available: false,
-            readers: HashMap::default(),
         }
     }
 
@@ -116,12 +117,10 @@ impl Component for Model {
 
                 // generate salt for hkdf expand()
                 let mut salt = [0u8; 32];
-                let rand_res = getrandom::getrandom(&mut salt);
-                if let Err(err) = rand_res {
+                if let Err(err) = getrandom::getrandom(&mut salt) {
                     log::error!("cannot get random salt value: {:?}", err);
                     return false;
                 }
-                log::info!("salt: {:?}", salt);
 
                 // generate key by hkdf
                 let h = Hkdf::<Sha256>::new(Some(&salt), passphrase.as_bytes());
@@ -130,22 +129,24 @@ impl Component for Model {
                     log::error!("cannot expand passphrase by hkdf: {:?}", err);
                     return false;
                 }
-                log::info!("key: {:?}", key_slice);
 
                 // generate nonce for XChaCha20Poly1305
-                let mut nonce = [0u8; 19];
-                let rand_res = getrandom::getrandom(&mut nonce);
-                if let Err(err) = rand_res {
+                let mut stream_nonce = [0u8; 19];
+                if let Err(err) = getrandom::getrandom(&mut stream_nonce) {
+                    log::error!("cannot get random nonce value: {:?}", err);
+                    return false;
+                }
+                let mut filename_nonce = [0u8; 24];
+                if let Err(err) = getrandom::getrandom(&mut filename_nonce) {
                     log::error!("cannot get random nonce value: {:?}", err);
                     return false;
                 }
 
                 let key = Key::from_slice(&key_slice);
                 let cipher = XChaCha20Poly1305::new(key);
-                // let xnonce = XNonce::from_slice(&nonce);
 
-                let xnonce = GenericArray::from_slice(nonce.as_ref());
-                let mut encryptor = aead::stream::EncryptorBE32::from_aead(cipher, xnonce);
+                let stream_nonce = GenericArray::from_slice(stream_nonce.as_ref());
+                let filename_nonce = GenericArray::from_slice(filename_nonce.as_ref());
 
                 let sys_stream = {
                     if let Ok(s) = file.stream().dyn_into() {
@@ -156,29 +157,154 @@ impl Component for Model {
                     }
                 };
 
-                // read file
+                // encrypt filename
                 let filename = file.name();
+                let encrypted_filename = {
+                    match cipher.encrypt(
+                        filename_nonce,
+                        filename.bytes().collect::<Vec<u8>>().as_ref(),
+                    ) {
+                        Ok(encrypted) => encrypted,
+                        Err(err) => {
+                            log::error!("failed to encrypt filename: {:?}", err);
+                            return true;
+                        }
+                    }
+                };
+
+                // read file
                 let stream = wasm_streams::ReadableStream::from_raw(sys_stream).into_stream();
 
                 let fut = stream
                     .and_then(|b| async move { b.dyn_into::<Uint8Array>() })
                     .map_err(MyError::JsValue)
                     .map_ok(|arr| arr.to_vec());
+
                 let mut fut = Box::pin(fut);
 
+                let stream_nonce = stream_nonce.clone();
+                let filename_nonce = filename_nonce.clone();
                 let encrypt = async move {
-                    let mut c: usize = 0;
+                    let mut encryptor =
+                        aead::stream::EncryptorBE32::from_aead(cipher, &stream_nonce);
+                    // send starting request
+                    let client = reqwest::Client::new();
+                    let form = Form::new()
+                        .part("stream_nonce", Part::stream(stream_nonce.to_vec()))
+                        .part("filename_nonce", Part::stream(filename_nonce.to_vec()))
+                        .part("salt", Part::stream(salt.to_vec()))
+                        .part("filename", Part::stream(encrypted_filename));
+                    let id = match client
+                        .post(build_url("/prepare_upload"))
+                        .multipart(form)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => {
+                            if resp.status() != 200 {
+                                return Err(MyError::Remote(
+                                    format!("prepare_upload status != 200, but {}", resp.status())
+                                        .into(),
+                                ));
+                            }
+                            let b = {
+                                match resp.bytes().await {
+                                    Ok(b) => b.to_vec(),
+                                    Err(_) => {
+                                        return Err(MyError::Remote(
+                                            "failed to read resp body".into(),
+                                        ));
+                                    }
+                                }
+                            };
+                            match serde_json::from_slice::<Value>(b.as_ref()) {
+                                Ok(v) => {
+                                    if let Some(v) = v.get("id").and_then(Value::as_i64) {
+                                        v
+                                    } else {
+                                        return Err(MyError::Remote(
+                                            "failed to deserialize body".into(),
+                                        ));
+                                    }
+                                }
+                                Err(_) => {
+                                    return Err(MyError::Remote(
+                                        "failed to deserialize body".into(),
+                                    ));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("remote error: {:?}", e);
+                            return Err(MyError::Remote("failed to request prepare_upload".into()));
+                        }
+                    };
+
+                    let id = id.to_be_bytes();
+                    let mut seq: i64 = 1;
                     while let Some(v) = fut.try_next().await? {
-                        let res = encryptor.encrypt_next(v.as_ref()).map_err(MyError::Aead)?;
-                        c += res.len();
-                        log::info!("encrypted data: {:?}", res);
+                        let chunk = encryptor.encrypt_next(v.as_ref()).map_err(MyError::Aead)?;
+
+                        // upload chunk to server
+                        // this will block next encryption...
+                        // maybe there is more good way to handle this
+                        let id = id.to_vec();
+                        let seq_b = seq.to_be_bytes().to_vec();
+                        let form = Form::new()
+                            .part("id", Part::bytes(id))
+                            .part("seq", Part::bytes(seq_b))
+                            .part("is_last", Part::bytes(vec![0]))
+                            .part("content", Part::stream(chunk));
+                        match client
+                            .post(build_url("/upload"))
+                            .multipart(form)
+                            .send()
+                            .await
+                        {
+                            Ok(resp) => {
+                                if resp.status() != 200 {
+                                    return Err(MyError::Remote(
+                                        format!("upload status != 200, but {}", resp.status())
+                                            .into(),
+                                    ));
+                                }
+                            }
+                            Err(_) => {
+                                return Err(MyError::Remote("failed to upload chunk".into()));
+                            }
+                        }
+                        seq += 1;
+                        log::info!("chunk {} upload success", seq);
                     }
-                    let res = encryptor
+                    // upload last chunk
+                    let chunk = encryptor
                         .encrypt_last(Vec::new().as_ref())
                         .map_err(MyError::Aead)?;
-                    c += res.len();
-                    log::info!("encrypted last data: {:?}", res);
-                    log::info!("total length: {}", c);
+                    let id = id.to_vec();
+                    let seq_b = seq.to_be_bytes().to_vec();
+                    let form = Form::new()
+                        .part("id", Part::bytes(id))
+                        .part("seq", Part::bytes(seq_b))
+                        .part("is_last", Part::bytes(vec![1]))
+                        .part("content", Part::stream(chunk));
+                    match client
+                        .post(build_url("/upload"))
+                        .multipart(form)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => {
+                            if resp.status() != 200 {
+                                return Err(MyError::Remote(
+                                    format!("upload status != 200, but {}", resp.status()).into(),
+                                ));
+                            }
+                        }
+                        Err(_) => {
+                            return Err(MyError::Remote("failed to upload chunk".into()));
+                        }
+                    }
+                    log::info!("last chunk {} upload success", seq);
 
                     Ok(())
                 };
@@ -188,61 +314,10 @@ impl Component for Model {
                     }
                 }));
 
-                // encrypt filename
-                // let encrypted_filename = {
-                //     match cipher.encrypt(xnonce, filename.bytes().collect::<Vec<u8>>().as_ref()) {
-                //         Ok(encrypted) => encrypted,
-                //         Err(err) => {
-                //             log::error!("failed to encrypt filename: {:?}", err);
-                //             return true;
-                //         }
-                //     }
-                // };
-
                 // TODO: show status: loading file
                 true
             }
-            Msg::FileReaded(filename, res) => {
-                if self.readers.remove(&filename).is_none() {
-                    // TODO: show failed status and reset state
-                    return true;
-                }
-
-                // // http client
-                // let client = reqwest::Client::new();
-                // let form = reqwest::multipart::Form::new()
-                //     .part("content", Part::stream(encrypted_content))
-                //     .part("nonce", Part::stream(nonce.to_vec()))
-                //     .part("salt", Part::stream(salt.to_vec()))
-                //     .part("filename", Part::stream(encrypted_filename.to_vec()));
-
-                // let clink = self.link.clone();
-                // spawn_local(async move {
-                //     match client
-                //         .post("http://localhost:12321/upload")
-                //         .multipart(form)
-                //         .send()
-                //         .await
-                //     {
-                //         Ok(resp) => {
-                //             if resp.status() != StatusCode::OK {
-                //                 log::error!(
-                //                     "request failed: server responded with {}",
-                //                     resp.status()
-                //                 );
-                //             } else {
-                //                 clink.send_message(Msg::UploadComplete());
-                //             }
-                //         }
-                //         Err(err) => {
-                //             log::error!("failed to send multipart request: {:?}", err);
-                //         }
-                //     }
-                // });
-
-                true
-            }
-            Msg::UploadComplete() => {
+            Msg::UploadComplete => {
                 log::info!("upload success!");
 
                 // this is test code
