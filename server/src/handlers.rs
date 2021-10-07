@@ -336,6 +336,106 @@ pub async fn upload(
     Ok("ok")
 }
 
+#[derive(Serialize)]
+pub struct MetadataResp {
+    #[serde(with = "super::utils::base64")]
+    filename: Vec<u8>,
+    #[serde(with = "super::utils::base64")]
+    salt: Vec<u8>,
+    #[serde(with = "super::utils::base64")]
+    stream_nonce: Vec<u8>,
+    #[serde(with = "super::utils::base64")]
+    filename_nonce: Vec<u8>,
+}
+
+pub async fn metadata(
+    state: Extension<Arc<State>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<MetadataResp>, StatusCode> {
+    let id = params.get("id").cloned();
+
+    let id = match id {
+        Some(id) => match id.parse::<i64>() {
+            Ok(id) => {
+                if id <= 0 {
+                    log::error!("id should be positive");
+                    return Err(StatusCode::BAD_REQUEST);
+                }
+                id
+            }
+            Err(_) => {
+                log::error!("id should be integer");
+                return Err(StatusCode::BAD_REQUEST);
+            }
+        },
+        None => {
+            log::error!("require id");
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+    let pool = &state.0.pool;
+
+    let client = {
+        match pool.get().await {
+            Ok(client) => client,
+            Err(err) => {
+                log::error!("could not get client from pool: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    };
+
+    // prepare statement
+    let query = "select filename, salt, stream_nonce, filename_nonce from files where id = $1 and upload_complete = true";
+    let stmt = {
+        match client.prepare(query).await {
+            Ok(stmt) => stmt,
+            Err(err) => {
+                log::error!("could not prepare statement: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    };
+
+    // query metadata
+    let result = {
+        match client.query(&stmt, &[&id]).await {
+            Ok(result) => result,
+            Err(err) => {
+                log::error!("failed to query: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    };
+
+    // validate query result
+    if result.is_empty() {
+        log::error!("metadata not found: id={}", id);
+        return Err(StatusCode::NOT_FOUND);
+    } else if result.len() != 1 {
+        log::error!("multiple metadata returned: id={}", id);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    let result = &result[0];
+    if result.len() != 4 {
+        log::error!("invalid column length: {}", result.len());
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    let filename: Vec<u8> = result.get(0);
+    let salt: Vec<u8> = result.get(1);
+    let stream_nonce: Vec<u8> = result.get(2);
+    let filename_nonce: Vec<u8> = result.get(3);
+
+    Ok(Json(MetadataResp {
+        filename,
+        salt,
+        stream_nonce,
+        filename_nonce,
+    }))
+}
+
 pub async fn download(
     state: Extension<Arc<State>>,
     Query(params): Query<HashMap<String, String>>,
