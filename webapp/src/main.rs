@@ -1,7 +1,7 @@
 use yew::{classes, html, Component, ComponentLink, Html};
 use yew_router::router::Router;
 
-use crate::{switch::AppRoute, upload::UploadComponent};
+use crate::{download::DownloadComponent, switch::AppRoute, upload::UploadComponent};
 
 mod download;
 mod switch;
@@ -31,9 +31,11 @@ impl Component for MainComponent {
                 <Router<AppRoute>
                     render = Router::render(|switch: AppRoute| {
                         match switch {
-                            AppRoute::Upload => html! { <UploadComponent /> }
+                            AppRoute::Upload => html! { <UploadComponent /> },
+                            AppRoute::Download(id) => html! { <DownloadComponent /> },
                         }
                     })
+                    redirect = Router::redirect(|_| { AppRoute::Upload })
                 />
             </div>
         }

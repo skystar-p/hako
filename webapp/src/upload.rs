@@ -17,7 +17,7 @@ use yew::{
     classes, html, web_sys::HtmlInputElement, ChangeData, Component, ComponentLink, Html, NodeRef,
 };
 
-pub enum Msg {
+pub enum UploadMsg {
     FileChanged(web_sys::File),
     PassphraseInput,
     UploadStart,
@@ -47,7 +47,7 @@ fn file_input(comp: &UploadComponent) -> Html {
     let file_onchange = comp.link.batch_callback(|e| {
         if let ChangeData::Files(files) = e {
             let file = files.item(0);
-            file.map(Msg::FileChanged)
+            file.map(UploadMsg::FileChanged)
         } else {
             None
         }
@@ -67,7 +67,7 @@ fn file_input(comp: &UploadComponent) -> Html {
 }
 
 impl Component for UploadComponent {
-    type Message = Msg;
+    type Message = UploadMsg;
     type Properties = ();
 
     fn create(_props: Self::Properties, link: ComponentLink<Self>) -> Self {
@@ -81,7 +81,7 @@ impl Component for UploadComponent {
 
     fn update(&mut self, msg: Self::Message) -> bool {
         match msg {
-            Msg::FileChanged(file) => {
+            UploadMsg::FileChanged(file) => {
                 self.selected_file = Some(file);
                 self.passphrase_available = false;
                 if let Some(input) = self.passphrase_ref.cast::<HtmlInputElement>() {
@@ -89,14 +89,14 @@ impl Component for UploadComponent {
                 }
                 true
             }
-            Msg::PassphraseInput => {
+            UploadMsg::PassphraseInput => {
                 if let Some(input) = self.passphrase_ref.cast::<HtmlInputElement>() {
                     let v = input.value();
                     self.passphrase_available = !v.is_empty();
                 }
                 true
             }
-            Msg::UploadStart => {
+            UploadMsg::UploadStart => {
                 if !self.passphrase_available {
                     return false;
                 }
@@ -326,7 +326,7 @@ impl Component for UploadComponent {
                 // TODO: show status: loading file
                 true
             }
-            Msg::UploadComplete => {
+            UploadMsg::UploadComplete => {
                 log::info!("upload success!");
 
                 // this is test code
@@ -427,8 +427,8 @@ impl Component for UploadComponent {
     }
 
     fn view(&self) -> Html {
-        let upload_onclick = self.link.callback(|_| Msg::UploadStart);
-        let passphrase_oninput = self.link.callback(|_| Msg::PassphraseInput);
+        let upload_onclick = self.link.callback(|_| UploadMsg::UploadStart);
+        let passphrase_oninput = self.link.callback(|_| UploadMsg::PassphraseInput);
         let passphrase_hidden = self.selected_file.is_none();
 
         let mut button_class = vec![
