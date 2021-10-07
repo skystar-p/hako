@@ -1,12 +1,12 @@
-use std::{convert::TryInto, sync::Arc};
+use std::{collections::HashMap, convert::TryInto, sync::Arc};
 
 use axum::{
     body::{Body, Bytes},
-    extract::{ContentLengthLimit, Extension, Multipart},
+    extract::{ContentLengthLimit, Extension, Multipart, Query},
     http::StatusCode,
     response::Json,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::state::State;
 
@@ -336,75 +336,147 @@ pub async fn upload(
     Ok("ok")
 }
 
-#[derive(Deserialize)]
-pub struct DownloadPayload {
-    id: i64,
-    seq: i64,
-}
-
 pub async fn download(
     state: Extension<Arc<State>>,
-    Json(payload): axum::extract::Json<DownloadPayload>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Body, StatusCode> {
-    let id = payload.id;
-    let seq = payload.seq;
+    let id = params.get("id").cloned();
 
-    if id <= 0 || seq <= 0 {
-        log::error!("id or seq should be positive");
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    let pool = &state.0.pool;
-
-    let client = {
-        match pool.get().await {
-            Ok(client) => client,
-            Err(err) => {
-                log::error!("could not get client from pool: {:?}", err);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    let id = match id {
+        Some(id) => match id.parse::<i64>() {
+            Ok(id) => {
+                if id <= 0 {
+                    log::error!("id should be positive");
+                    return Err(StatusCode::BAD_REQUEST);
+                }
+                id
             }
+            Err(_) => {
+                log::error!("id should be integer");
+                return Err(StatusCode::BAD_REQUEST);
+            }
+        },
+        None => {
+            log::error!("require id");
+            return Err(StatusCode::BAD_REQUEST);
         }
     };
 
-    // prepare statement
-    let query = "select content from file_contents where file_id = $1 and seq = $2";
-    let stmt = {
-        match client.prepare(query).await {
-            Ok(stmt) => stmt,
-            Err(err) => {
-                log::error!("could not prepare statement: {:?}", err);
+    // prepare sender
+    let (mut sender, body) = Body::channel();
+
+    tokio::spawn(async move {
+        let pool = &state.0.pool;
+
+        let client = {
+            match pool.get().await {
+                Ok(client) => client,
+                Err(err) => {
+                    log::error!("could not get client from pool: {:?}", err);
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        };
+
+        // prepare statement
+        let query = "select seq from file_contents where file_id = $1 order by seq desc limit 1";
+        let stmt = {
+            match client.prepare(query).await {
+                Ok(stmt) => stmt,
+                Err(err) => {
+                    log::error!("could not prepare statement: {:?}", err);
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        };
+
+        // query last seq
+        let result = {
+            match client.query(&stmt, &[&id]).await {
+                Ok(result) => result,
+                Err(err) => {
+                    log::error!("failed to query: {:?}", err);
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        };
+        // validate query result
+        if result.is_empty() {
+            log::error!("file or last seq not found: id={}", id);
+            return Err(StatusCode::NOT_FOUND);
+        } else if result.len() != 1 {
+            log::error!("multiple rows returned: id={}", id);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+
+        let result = &result[0];
+        if result.len() != 1 {
+            log::error!("invalid column length: {}", result.len());
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+
+        // extract last_seq
+        let last_seq: i64 = result.get(0);
+        log::info!("file id: {}, last_seq is {}", id, last_seq);
+
+        for seq in 1..=last_seq {
+            // prepare statement
+            let query = "select content from file_contents where file_id = $1 and seq = $2";
+            let stmt = {
+                match client.prepare(query).await {
+                    Ok(stmt) => stmt,
+                    Err(err) => {
+                        log::error!("could not prepare statement: {:?}", err);
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                }
+            };
+            // query file
+            let result = {
+                match client.query(&stmt, &[&id, &seq]).await {
+                    Ok(result) => result,
+                    Err(err) => {
+                        log::error!("failed to query: {:?}", err);
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                }
+            };
+            // validate query result
+            if result.is_empty() {
+                log::error!("chunk not found: id={}, seq={}", id, seq);
+                return Err(StatusCode::NOT_FOUND);
+            } else if result.len() != 1 {
+                log::error!("multiple chunk returned: id={}, seq={}", id, seq);
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
-        }
-    };
 
-    // query file
-    let result = {
-        match client.query(&stmt, &[&id, &seq]).await {
-            Ok(result) => result,
-            Err(err) => {
-                log::error!("failed to query: {:?}", err);
+            let result = &result[0];
+            if result.len() != 1 {
+                log::error!("invalid column length: {}", result.len());
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
+
+            // extract fields
+            let content: Vec<u8> = result.get(0);
+
+            log::info!("file id: {}, sending chunk {}", id, seq);
+            match sender.send_data(Bytes::from(content)).await {
+                Ok(_) => {}
+                Err(e) => {
+                    sender.abort();
+                    log::error!(
+                        "failed to send chunk: id={}, seq={}, error={:?}",
+                        id,
+                        seq,
+                        e
+                    );
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
         }
-    };
-    // validate query result
-    if result.is_empty() {
-        log::error!("chunk not found: id={}, seq={}", id, seq);
-        return Err(StatusCode::NOT_FOUND);
-    } else if result.len() != 1 {
-        log::error!("multiple chunk returned: id={}, seq={}", id, seq);
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
 
-    let result = &result[0];
-    if result.len() != 1 {
-        log::error!("invalid column length: {}", result.len());
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
+        Ok(())
+    });
 
-    // extract fields
-    let content: Vec<u8> = result.get(0);
-
-    Ok(Body::from(content))
+    Ok(body)
 }

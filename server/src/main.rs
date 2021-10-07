@@ -36,7 +36,7 @@ async fn main() {
     let shared_state = Arc::new(State { pool });
 
     let app = Router::new()
-        .route("/download", get(handlers::download))
+        .route("/api/download", get(handlers::download))
         .route("/ping", get(handlers::ping))
         .route("/prepare_upload", post(handlers::prepare_upload))
         .route("/upload", post(handlers::upload))
