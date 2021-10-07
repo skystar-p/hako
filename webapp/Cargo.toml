@@ -24,3 +24,4 @@ wasm-logger = "0.2.0"
 wasm-streams = "0.2.1"
 web-sys = { version = "0.3.55", features = ["Blob", "Url", "ReadableStream"] }
 yew = "0.18.0"
+yew-router = "0.15.0"
