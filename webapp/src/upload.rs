@@ -17,6 +17,8 @@ use yew::{
     classes, html, web_sys::HtmlInputElement, ChangeData, Component, ComponentLink, Html, NodeRef,
 };
 
+use crate::utils::build_url;
+
 pub enum UploadMsg {
     FileChanged(web_sys::File),
     PassphraseInput,
@@ -36,11 +38,6 @@ pub struct UploadComponent {
     selected_file: Option<web_sys::File>,
     passphrase_ref: NodeRef,
     passphrase_available: bool,
-}
-
-const BASE_URL: &str = "http://localhost:12321";
-fn build_url(relative: &str) -> String {
-    format!("{}{}", BASE_URL, relative)
 }
 
 fn file_input(comp: &UploadComponent) -> Html {
@@ -449,10 +446,7 @@ impl Component for UploadComponent {
         }
 
         html! {
-            <div class=classes!("m-auto", "min-w-1/2", "border-solid", "border-2", "border-opacity-20", "rounded-xl")>
-                <h1 class=classes!("text-center", "text-6xl", "text-gray-300", "font-sans", "m-5")>
-                    { "Hako" }
-                </h1>
+            <>
                 { file_input(self) }
                 <div class=classes!("flex", "justify-center", "mt-5")>
                     <p class=classes!("text-gray-300", "mb-3")>{ self.selected_file.as_ref().map_or("".into(), |f: &web_sys::File| f.name()) }</p>
@@ -476,7 +470,7 @@ impl Component for UploadComponent {
                         { "UPLOAD" }
                     </button>
                 </div>
-            </div>
+            </>
         }
     }
 }
