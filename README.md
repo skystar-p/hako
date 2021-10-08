@@ -6,11 +6,11 @@ Simple file sharing with End-to-End encryption, powered by Rust and WebAssembly
 * End-to-End encryption using `XChacha20Poly1305`
 * Fast and safe implementations thanks to [Rust](https://www.rust-lang.org/)
 * Neat Web UI built with WebAssembly
-* Asynchronous upload, encryption, download, and decryption.
+* Asynchronous upload, encryption, download, and decryption on your browser.
 
 ## Why?
-Sharing file safely between two devices is quite annoying. Hardware mediums(like USB flash memory) can be useful, but sharing file between mobile devices or different OSes are frustrating.
-You can go with third-party file hosting server or E-mail, but those are not safe and not good for you privacy.
+Sharing file safely between two devices is quite annoying. Hardware mediums(like USB flash memory) can be useful, but sharing file between mobile devices or different operating systemss are frustrating.
+You can go with third-party file hosting server or E-mail, but those are not safe and not good for you privacy.  
 Hako is web application, which gives you great compatibility among various devices and operating systems. Also, Hako uses End-to-End encryption, so no one can see your original file, even the Hako server.
 
 ## Build
