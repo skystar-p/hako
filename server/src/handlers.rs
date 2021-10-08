@@ -346,6 +346,7 @@ pub struct MetadataResp {
     stream_nonce: Vec<u8>,
     #[serde(with = "super::utils::base64")]
     filename_nonce: Vec<u8>,
+    size: i64,
 }
 
 pub async fn metadata(
@@ -386,7 +387,7 @@ pub async fn metadata(
     };
 
     // prepare statement
-    let query = "select filename, salt, stream_nonce, filename_nonce from files where id = $1 and upload_complete = true";
+    let query = "select filename, salt, stream_nonce, filename_nonce, (select sum(length(content)) from file_contents where file_id = $1) from files where id = $1 and upload_complete = true";
     let stmt = {
         match client.prepare(query).await {
             Ok(stmt) => stmt,
@@ -418,7 +419,7 @@ pub async fn metadata(
     }
 
     let result = &result[0];
-    if result.len() != 4 {
+    if result.len() != 5 {
         log::error!("invalid column length: {}", result.len());
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -427,12 +428,14 @@ pub async fn metadata(
     let salt: Vec<u8> = result.get(1);
     let stream_nonce: Vec<u8> = result.get(2);
     let filename_nonce: Vec<u8> = result.get(3);
+    let size: i64 = result.get(4);
 
     Ok(Json(MetadataResp {
         filename,
         salt,
         stream_nonce,
         filename_nonce,
+        size,
     }))
 }
 
