@@ -1,29 +1,24 @@
-use std::convert::TryInto;
-
 use aead::generic_array::GenericArray;
 use chacha20poly1305::aead::{Aead, NewAead};
-use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
+use chacha20poly1305::{Key, XChaCha20Poly1305};
 use futures_util::{FutureExt, TryStreamExt};
 use hkdf::Hkdf;
-use js_sys::{Array, Uint8Array};
+use js_sys::Uint8Array;
 use reqwest::multipart::{Form, Part};
-use reqwest::StatusCode;
 use serde_json::Value;
 use sha2::Sha256;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::Url;
 use yew::{
     classes, html, web_sys::HtmlInputElement, ChangeData, Component, ComponentLink, Html, NodeRef,
 };
 
-use crate::utils::build_url;
+use crate::utils::{build_url, BLOCK_SIZE};
 
 pub enum UploadMsg {
     FileChanged(web_sys::File),
     PassphraseInput,
     UploadStart,
-    UploadComplete,
 }
 
 #[derive(Debug)]
@@ -237,26 +232,27 @@ impl Component for UploadComponent {
                         }
                     };
 
-                    const FLUSH_LIMIT: usize = 1024 * 1024 * 2;
-
                     let id = id.to_be_bytes();
                     let mut seq: i64 = 1;
-                    let mut buffer = Vec::<u8>::with_capacity(1024 * 1024);
+                    let mut buffer = Vec::<u8>::with_capacity(BLOCK_SIZE);
                     while let Some(v) = fut.try_next().await? {
-                        let chunk = encryptor.encrypt_next(v.as_ref()).map_err(MyError::Aead)?;
-                        buffer.extend(chunk);
-
-                        if buffer.len() > FLUSH_LIMIT {
+                        let mut v: &[u8] = v.as_ref();
+                        while buffer.len() + v.len() >= BLOCK_SIZE {
+                            let split_idx = BLOCK_SIZE - buffer.len();
+                            buffer.extend(&v[..split_idx]);
                             // upload chunk to server
                             // this will block next encryption...
                             // maybe there is more good way to handle this
+                            let chunk = encryptor
+                                .encrypt_next(buffer.as_ref())
+                                .map_err(MyError::Aead)?;
                             let id = id.to_vec();
                             let seq_b = seq.to_be_bytes().to_vec();
                             let form = Form::new()
                                 .part("id", Part::bytes(id))
                                 .part("seq", Part::bytes(seq_b))
                                 .part("is_last", Part::bytes(vec![0]))
-                                .part("content", Part::stream(buffer.clone()));
+                                .part("content", Part::stream(chunk));
                             match client
                                 .post(build_url("/upload"))
                                 .multipart(form)
@@ -275,23 +271,24 @@ impl Component for UploadComponent {
                                     return Err(MyError::Remote("failed to upload chunk".into()));
                                 }
                             }
-                            log::info!("chunk {} upload success", seq);
                             buffer.clear();
+                            v = &v[split_idx..];
+                            log::info!("chunk {} upload success", seq);
                             seq += 1;
                         }
+                        buffer.extend(v);
                     }
                     // upload last chunk
                     let chunk = encryptor
-                        .encrypt_last(Vec::new().as_ref())
+                        .encrypt_last(buffer.as_ref())
                         .map_err(MyError::Aead)?;
-                    buffer.extend(chunk);
                     let id = id.to_vec();
                     let seq_b = seq.to_be_bytes().to_vec();
                     let form = Form::new()
                         .part("id", Part::bytes(id))
                         .part("seq", Part::bytes(seq_b))
                         .part("is_last", Part::bytes(vec![1]))
-                        .part("content", Part::stream(buffer));
+                        .part("content", Part::stream(chunk));
                     match client
                         .post(build_url("/upload"))
                         .multipart(form)
@@ -321,99 +318,6 @@ impl Component for UploadComponent {
                 }));
 
                 // TODO: show status: loading file
-                true
-            }
-            UploadMsg::UploadComplete => {
-                log::info!("upload success!");
-
-                // this is test code
-                // http client
-                let passphrase = if let Some(input) = self.passphrase_ref.cast::<HtmlInputElement>()
-                {
-                    input.value()
-                } else {
-                    log::error!("cannot get passphrase string from input");
-                    return false;
-                };
-                let client = reqwest::Client::new();
-                spawn_local(async move {
-                    let res = match client.get("http://localhost:12321/1").send().await {
-                        Ok(resp) => {
-                            if resp.status() != StatusCode::OK {
-                                log::error!(
-                                    "request failed: server responded with {}",
-                                    resp.status()
-                                );
-                                return;
-                            } else {
-                                resp.bytes().await
-                            }
-                        }
-                        Err(err) => {
-                            log::error!("failed to download: {:?}", err);
-                            return;
-                        }
-                    };
-
-                    // TODO: match
-                    let res = res.unwrap().to_vec();
-                    // extract all fields
-                    let content_len = u64::from_be_bytes(res[0..8].try_into().unwrap());
-                    let filename_len = u64::from_be_bytes(res[8..16].try_into().unwrap());
-                    log::info!("content_len = {}", content_len);
-                    log::info!("filename_len = {}", filename_len);
-                    let res = &res[16..];
-
-                    let salt = &res[..32];
-                    log::info!("salt = {:?}", salt);
-                    let res = &res[32..];
-
-                    let nonce = &res[..24];
-                    log::info!("nonce = {:?}", nonce);
-                    let res = &res[24..];
-
-                    let filename = &res[..(filename_len as usize)];
-                    let content = &res[(filename_len as usize)..];
-
-                    let h = Hkdf::<Sha256>::new(Some(salt), passphrase.as_bytes());
-                    let mut key_slice = [0u8; 32];
-                    if let Err(err) = h.expand(&[], &mut key_slice[..]) {
-                        log::error!("cannot expand passphrase by hkdf: {:?}", err);
-                        return;
-                    }
-
-                    let key = Key::from_slice(&key_slice);
-                    let cipher = XChaCha20Poly1305::new(key);
-                    let xnonce = XNonce::from_slice(nonce);
-
-                    let decrypted_filename = cipher.decrypt(xnonce, filename).unwrap();
-                    log::info!("decrypted filename: {:?}", decrypted_filename);
-                    let decrypted_content = cipher.decrypt(xnonce, content).unwrap();
-                    log::info!("decrypted content: {:?}", decrypted_content);
-
-                    let bytes = Array::new();
-                    bytes.push(&Uint8Array::from(&decrypted_content[..]));
-                    let decrypted_blob = {
-                        match web_sys::Blob::new_with_u8_array_sequence(&bytes) {
-                            Ok(blob) => blob,
-                            Err(err) => {
-                                log::error!("failed to make data into blob: {:?}", err);
-                                return;
-                            }
-                        }
-                    };
-                    let obj_url = {
-                        match Url::create_object_url_with_blob(&decrypted_blob) {
-                            Ok(u) => u,
-                            Err(err) => {
-                                log::error!("failed to make blob into object url: {:?}", err);
-                                return;
-                            }
-                        }
-                    };
-                    log::info!("obj_url: {}", obj_url);
-                });
-
                 true
             }
         }
