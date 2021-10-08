@@ -22,7 +22,7 @@ cargo build --release
 ```
 
 ### Frontend
-You need two additional tools: `[trunk](https://trunkrs.dev/)` and `[tailwindcss](https://tailwindcss.com/)`.
+You need two additional tools: [`trunk`](https://trunkrs.dev/) and [`tailwindcss`](https://tailwindcss.com/).
 ```sh
 # To install trunk, use:
 cargo install --locked trunk
