@@ -1,11 +1,15 @@
 use serde::Deserialize;
 use wasm_bindgen_futures::spawn_local;
-use yew::{classes, html, Component, ComponentLink, NodeRef, Properties};
+use yew::{
+    classes, html, web_sys::HtmlInputElement, Component, ComponentLink, NodeRef, Properties,
+};
 
 use crate::utils::build_url;
 
 pub enum DownloadMsg {
     Metadata(Result<FileMetadata, MetadataError>),
+    PassphraseInput,
+    StartDownload,
 }
 
 pub enum MetadataError {
@@ -36,6 +40,7 @@ pub struct FileMetadata {
     stream_nonce: Vec<u8>,
     #[serde(with = "crate::utils::base64")]
     filename_nonce: Vec<u8>,
+    size: i64,
 }
 
 async fn get_file_metadata(id: i64) -> Result<FileMetadata, MetadataError> {
@@ -100,6 +105,14 @@ impl Component for DownloadComponent {
                 self.metadata = Some(metadata);
                 true
             }
+            DownloadMsg::PassphraseInput => {
+                if let Some(input) = self.passphrase_ref.cast::<HtmlInputElement>() {
+                    let v = input.value();
+                    self.passphrase_available = !v.is_empty();
+                }
+                true
+            }
+            DownloadMsg::StartDownload => true,
         }
     }
 
@@ -125,34 +138,21 @@ impl Component for DownloadComponent {
             button_class.push("cursor-not-allowed");
         }
 
+        let make_meta_span = |s: &str| {
+            html! {
+                <span class=classes!("text-gray-900", "mt-3")>{ s }</span>
+            }
+        };
         let metadata_div = match self.metadata {
             Some(ref m) => match m {
-                Ok(_) => {
-                    html! {
-                        <span>{ "Enter passphrase" }</span>
-                    }
-                }
+                Ok(_) => make_meta_span("Enter passphrase"),
                 Err(e) => match e {
-                    MetadataError::FileNotFound => {
-                        html! {
-                            <span>{ "File not found" }</span>
-                        }
-                    }
-                    MetadataError::NotAvailable => {
-                        html! {
-                            <span>{ "Server not available" }</span>
-                        }
-                    }
-                    MetadataError::Deserialize => {
-                        html! {
-                            <span>{ "Malformed response from server" }</span>
-                        }
-                    }
+                    MetadataError::FileNotFound => make_meta_span("File not found"),
+                    MetadataError::NotAvailable => make_meta_span("Server not available"),
+                    MetadataError::Deserialize => make_meta_span("Malformed response from server"),
                 },
             },
-            None => html! {
-                <span>{ "Loading..." }</span>
-            },
+            None => make_meta_span("Loading..."),
         };
 
         let disabled = {
@@ -162,6 +162,9 @@ impl Component for DownloadComponent {
                 false
             }
         };
+
+        let passphrase_oninput = self.link.callback(|_| DownloadMsg::PassphraseInput);
+        let download_onclick = self.link.callback(|_| DownloadMsg::StartDownload);
 
         html! {
             <>
@@ -176,13 +179,13 @@ impl Component for DownloadComponent {
                         class=classes!("px-4", "py-2", "rounded-lg", "border", "border-gray-300", "focus:outline-none", "focus:ring-2", "focus:ring-gray-200", "text-center")
                         disabled=!disabled
                         placeholder={ "Passphrase" }
-                        // oninput={passphrase_oninput}
+                        oninput={passphrase_oninput}
                     />
                 </div>
                 <div class=classes!("flex", "justify-center")>
                     <button
                         disabled={disabled || !self.passphrase_available}
-                        // onclick={upload_onclick}
+                        onclick={download_onclick}
                         class=classes!(button_class)>
                         { "DOWNLOAD" }
                     </button>
