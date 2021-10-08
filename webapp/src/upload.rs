@@ -19,6 +19,7 @@ pub enum UploadMsg {
     FileChanged(web_sys::File),
     PassphraseInput,
     UploadStart,
+    Progress(ProgressInfo),
 }
 
 #[derive(Debug)]
@@ -28,11 +29,17 @@ enum MyError {
     Remote(String),
 }
 
+pub enum ProgressInfo {
+    UploadBytes(usize),
+}
+
 pub struct UploadComponent {
     link: ComponentLink<Self>,
     selected_file: Option<web_sys::File>,
     passphrase_ref: NodeRef,
     passphrase_available: bool,
+    file_size: Option<usize>,
+    uploaded_size: Option<usize>,
 }
 
 fn file_input(comp: &UploadComponent) -> Html {
@@ -68,12 +75,16 @@ impl Component for UploadComponent {
             selected_file: None,
             passphrase_ref: NodeRef::default(),
             passphrase_available: false,
+            file_size: None,
+            uploaded_size: None,
         }
     }
 
     fn update(&mut self, msg: Self::Message) -> bool {
         match msg {
             UploadMsg::FileChanged(file) => {
+                let file_size = file.size() as usize;
+                self.file_size = Some(file_size);
                 self.selected_file = Some(file);
                 self.passphrase_available = false;
                 if let Some(input) = self.passphrase_ref.cast::<HtmlInputElement>() {
@@ -176,6 +187,7 @@ impl Component for UploadComponent {
 
                 let stream_nonce = *stream_nonce;
                 let filename_nonce = *filename_nonce;
+                let clink = self.link.clone();
                 let encrypt = async move {
                     let mut encryptor =
                         aead::stream::EncryptorBE32::from_aead(cipher, &stream_nonce);
@@ -246,6 +258,7 @@ impl Component for UploadComponent {
                             let chunk = encryptor
                                 .encrypt_next(buffer.as_ref())
                                 .map_err(MyError::Aead)?;
+                            let chunk_len = chunk.len();
                             let id = id.to_vec();
                             let seq_b = seq.to_be_bytes().to_vec();
                             let form = Form::new()
@@ -273,8 +286,11 @@ impl Component for UploadComponent {
                             }
                             buffer.clear();
                             v = &v[split_idx..];
-                            log::info!("chunk {} upload success", seq);
                             seq += 1;
+
+                            clink.send_message(UploadMsg::Progress(ProgressInfo::UploadBytes(
+                                chunk_len,
+                            )));
                         }
                         buffer.extend(v);
                     }
@@ -284,6 +300,7 @@ impl Component for UploadComponent {
                         .map_err(MyError::Aead)?;
                     let id = id.to_vec();
                     let seq_b = seq.to_be_bytes().to_vec();
+                    let chunk_len = chunk.len();
                     let form = Form::new()
                         .part("id", Part::bytes(id))
                         .part("seq", Part::bytes(seq_b))
@@ -307,7 +324,7 @@ impl Component for UploadComponent {
                             return Err(MyError::Remote("failed to upload chunk".into()));
                         }
                     }
-                    log::info!("last chunk {} upload success", seq);
+                    clink.send_message(UploadMsg::Progress(ProgressInfo::UploadBytes(chunk_len)));
 
                     Ok(())
                 };
@@ -318,6 +335,22 @@ impl Component for UploadComponent {
                 }));
 
                 // TODO: show status: loading file
+                true
+            }
+            UploadMsg::Progress(info) => {
+                match info {
+                    ProgressInfo::UploadBytes(b) => {
+                        let before = self.uploaded_size.unwrap_or(0);
+                        let file_size = self.file_size.unwrap_or(0);
+                        let after = if before + b > file_size {
+                            file_size
+                        } else {
+                            before + b
+                        };
+                        self.uploaded_size = Some(after);
+                    }
+                }
+
                 true
             }
         }
@@ -349,6 +382,20 @@ impl Component for UploadComponent {
             button_class.push("cursor-not-allowed");
         }
 
+        let mut upload_byte_class = vec!["flex", "justify-center"];
+        let mut progress_class = vec!["flex", "relative", "pt-1", "justify-center"];
+        if self.uploaded_size.is_none() {
+            upload_byte_class.push("hidden");
+            progress_class.push("hidden");
+        }
+        let uploaded = self.uploaded_size.unwrap_or(0);
+        let file_size = self.file_size.unwrap_or(0);
+        let progress_percent_width = if file_size == 0 {
+            0
+        } else {
+            ((uploaded as f64 / file_size as f64) * (100_f64)) as usize
+        };
+
         html! {
             <>
                 { file_input(self) }
@@ -365,6 +412,16 @@ impl Component for UploadComponent {
                         hidden={passphrase_hidden}
                         oninput={passphrase_oninput}
                     />
+                </div>
+                <div class=classes!(progress_class)>
+                    <div class=classes!("overflow-hidden", "h-2", "mb-4", "text-xs", "flex", "rounded", "bg-blue-200", "w-1/2", "mt-4")>
+                        <div style={format!("width:{}%", progress_percent_width)} class=classes!("shadow-none", "flex", "flex-col", "text-center", "whitespace-nowrap", "text-white", "justify-center", "bg-blue-400")></div>
+                    </div>
+                </div>
+                <div class=classes!(upload_byte_class)>
+                    <span class=classes!("text-gray-800")>
+                        { uploaded } { " / " } { file_size }
+                    </span>
                 </div>
                 <div class=classes!("flex", "justify-center")>
                     <button
