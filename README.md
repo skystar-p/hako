@@ -15,11 +15,12 @@ Hako is web application, which gives you great compatibility among various devic
 
 ## Build
 ### Server
-All you need is `cargo`. If you don't have it, follow the instructions in [here](https://www.rust-lang.org/tools/install).
+You need `cargo` to build server. If you don't have it, follow the instructions in [here](https://www.rust-lang.org/tools/install).
 ```sh
 cd ./server
 cargo build --release
 ```
+Also, to serve your Hako server, running PostgreSQL server is required. See [database schema](./server/schema.sql).
 
 ### Frontend
 You need two additional tools: [`trunk`](https://trunkrs.dev/) and [`tailwindcss`](https://tailwindcss.com/).
