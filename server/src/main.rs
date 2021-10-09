@@ -15,6 +15,7 @@ mod config;
 mod handlers;
 mod state;
 mod utils;
+mod workers;
 
 #[tokio::main]
 async fn main() {
@@ -35,6 +36,7 @@ async fn main() {
     let pool = db_config.create_pool(NoTls).unwrap();
 
     let shared_state = Arc::new(State { pool });
+    let worker_state = shared_state.clone();
 
     let app = Router::new()
         .route("/api/metadata", get(handlers::metadata))
@@ -46,6 +48,9 @@ async fn main() {
         .layer(AddExtensionLayer::new(shared_state));
 
     let addr: SocketAddr = config.bind_addr.parse().expect("invalid bind addr");
+
+    // start worker
+    tokio::spawn(workers::delete_expired(worker_state, config));
 
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
