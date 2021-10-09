@@ -37,6 +37,8 @@ trunk build --release
 ```
 
 ## To-dos
+* Nice mobile web view
+    * can be done easily thanks to tailwindcss
 * Authentication
     * WebAuthn
     * or just plain username-password pair
@@ -45,3 +47,5 @@ trunk build --release
 * No PostgreSQL dependency
     * By just using unix filesystem and small SQLite database?
 * Performance gain using Web Worker
+* CLI tool
+    * WASM can provide compatibility among various environment, and CLI downloader will provide good performance
