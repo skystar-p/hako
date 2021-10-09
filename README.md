@@ -1,6 +1,5 @@
 # Hako
 Simple file sharing with client-side encryption, powered by Rust and WebAssembly
-
 ## Features
 * Handy file sharing
 * Client-side encryption using `XChacha20Poly1305`
@@ -36,3 +35,13 @@ And build your WASM application.
 ```sh
 trunk build --release
 ```
+
+## To-dos
+* Authentication
+    * WebAuthn
+    * or just plain username-password pair
+* File expiry, download limit
+    * Or just LRU
+* No PostgreSQL dependency
+    * By just using unix filesystem and small SQLite database?
+* Performance gain using Web Worker
