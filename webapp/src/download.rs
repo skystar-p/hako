@@ -1,5 +1,7 @@
+use std::borrow::Cow;
+
 use aead::generic_array::GenericArray;
-use chacha20poly1305::aead::NewAead;
+use chacha20poly1305::aead::{Aead, NewAead};
 use chacha20poly1305::{Key, XChaCha20Poly1305};
 use futures_util::TryStreamExt;
 use hkdf::Hkdf;
@@ -17,6 +19,9 @@ pub enum DownloadMsg {
     Metadata(Result<FileMetadata, MetadataError>),
     PassphraseInput,
     StartDownload,
+    Filename(Vec<u8>),
+    Progress(ProgressInfo),
+    DownloadError(DownloadError),
     DownloadComplete(Vec<u8>),
 }
 
@@ -28,17 +33,27 @@ pub enum MetadataError {
 }
 
 #[derive(Debug)]
-enum MyError {
+pub enum DownloadError {
+    KeyGeneration(Cow<'static, str>),
     JsValue(JsValue),
     Aead(aead::Error),
+    Other,
+}
+
+pub enum ProgressInfo {
+    DownloadBytes(usize),
 }
 
 pub struct DownloadComponent {
     link: ComponentLink<Self>,
     passphrase_ref: NodeRef,
+    a_ref: NodeRef,
     passphrase_available: bool,
     file_id: i64,
     metadata: Option<Result<FileMetadata, MetadataError>>,
+    decrypted_filename: Option<String>,
+    downloaded_size: Option<usize>,
+    download_error: Option<DownloadError>,
 }
 
 #[derive(Properties, Clone, PartialEq)]
@@ -131,9 +146,13 @@ impl Component for DownloadComponent {
         Self {
             link,
             passphrase_ref: NodeRef::default(),
+            a_ref: NodeRef::default(),
             passphrase_available: false,
             file_id: props.id,
             metadata: None,
+            decrypted_filename: None,
+            downloaded_size: None,
+            download_error: None,
         }
     }
 
@@ -141,6 +160,7 @@ impl Component for DownloadComponent {
         match msg {
             DownloadMsg::Metadata(metadata) => {
                 self.metadata = Some(metadata);
+
                 true
             }
             DownloadMsg::PassphraseInput => {
@@ -151,6 +171,10 @@ impl Component for DownloadComponent {
                 true
             }
             DownloadMsg::StartDownload => {
+                self.decrypted_filename = None;
+                self.downloaded_size = None;
+                self.download_error = None;
+
                 let metadata = {
                     match &self.metadata {
                         Some(m) => match m {
@@ -166,9 +190,41 @@ impl Component for DownloadComponent {
                 {
                     input.value()
                 } else {
-                    log::error!("cannot get passphrase string from input");
+                    let msg = "cannot get passphrase string from input";
+                    self.link.send_message(DownloadMsg::DownloadError(
+                        DownloadError::KeyGeneration(Cow::from(msg)),
+                    ));
                     return false;
                 };
+
+                // decrypt filename first
+                // restore key from passphrase
+                let h = Hkdf::<Sha256>::new(Some(metadata.salt.as_ref()), passphrase.as_bytes());
+                let mut key_slice = [0u8; 32];
+                if let Err(err) = h.expand(&[], &mut key_slice[..]) {
+                    log::error!("cannot expand passphrase by hkdf: {:?}", err);
+                    let msg = "cannot expand passphrase by hkdf";
+                    self.link.send_message(DownloadMsg::DownloadError(
+                        DownloadError::KeyGeneration(Cow::from(msg)),
+                    ));
+                    return false;
+                }
+                let key = Key::clone_from_slice(&key_slice);
+                let cipher = XChaCha20Poly1305::new(&key);
+                let filename_nonce = GenericArray::from_slice(metadata.filename_nonce.as_ref());
+                let decrypted_filename = {
+                    match cipher.decrypt(filename_nonce, metadata.filename.as_ref()) {
+                        Ok(decrypted) => decrypted,
+                        Err(err) => {
+                            log::error!("failed to decrypt filename: {:?}", err);
+                            self.link
+                                .send_message(DownloadMsg::DownloadError(DownloadError::Aead(err)));
+                            return true;
+                        }
+                    }
+                };
+                self.link
+                    .send_message(DownloadMsg::Filename(decrypted_filename));
 
                 let file_id = self.file_id;
                 let metadata = metadata.clone();
@@ -177,8 +233,10 @@ impl Component for DownloadComponent {
                     let stream = match get_download_stream(file_id).await {
                         Ok(stream) => stream,
                         Err(e) => {
-                            // TODO: propagate error
                             log::error!("cannot get stream: {:?}", e);
+                            clink.send_message(DownloadMsg::DownloadError(DownloadError::JsValue(
+                                e,
+                            )));
                             return;
                         }
                     };
@@ -186,22 +244,12 @@ impl Component for DownloadComponent {
                     let stream = stream.into_stream();
                     let stream = stream
                         .and_then(|b| async move { b.dyn_into::<Uint8Array>() })
-                        .map_err(MyError::JsValue)
+                        .map_err(DownloadError::JsValue)
                         .map_ok(|arr| arr.to_vec());
                     let mut stream = Box::pin(stream);
 
-                    // restore key from passphrase
-                    let h =
-                        Hkdf::<Sha256>::new(Some(metadata.salt.as_ref()), passphrase.as_bytes());
-                    let mut key_slice = [0u8; 32];
-                    if let Err(err) = h.expand(&[], &mut key_slice[..]) {
-                        log::error!("cannot expand passphrase by hkdf: {:?}", err);
-                        return;
-                    }
-                    let key = Key::from_slice(&key_slice);
-
                     // make cipher
-                    let cipher = XChaCha20Poly1305::new(key);
+                    let cipher = XChaCha20Poly1305::new(&key);
                     let stream_nonce = GenericArray::from_slice(metadata.stream_nonce.as_ref());
                     let mut decryptor =
                         aead::stream::DecryptorBE32::from_aead(cipher, stream_nonce);
@@ -209,7 +257,6 @@ impl Component for DownloadComponent {
                     // preallocate buffers
                     let mut body = Vec::<u8>::with_capacity(metadata.size as usize);
                     let mut buffer = Vec::<u8>::with_capacity(BLOCK_SIZE + BLOCK_OVERHEAD);
-                    let mut total_byte: usize = 0;
                     loop {
                         let chunk = match stream.try_next().await {
                             Ok(c) => match c {
@@ -218,16 +265,22 @@ impl Component for DownloadComponent {
                                     let last_res = match decryptor.decrypt_last(buffer.as_ref()) {
                                         Ok(res) => res,
                                         Err(e) => {
-                                            // TODO: inform to user
                                             log::error!("decryption failed: {:?}", e);
+                                            clink.send_message(DownloadMsg::DownloadError(
+                                                DownloadError::Aead(e),
+                                            ));
                                             return;
                                         }
                                     };
+                                    clink.send_message(DownloadMsg::Progress(
+                                        ProgressInfo::DownloadBytes(buffer.len()),
+                                    ));
                                     body.extend(last_res);
                                     break;
                                 }
                             },
-                            Err(_) => {
+                            Err(e) => {
+                                clink.send_message(DownloadMsg::DownloadError(e));
                                 return;
                             }
                         };
@@ -238,20 +291,21 @@ impl Component for DownloadComponent {
                             buffer.extend(&chunk[..split_idx]);
                             let res = match decryptor
                                 .decrypt_next(buffer.as_ref())
-                                .map_err(MyError::Aead)
+                                .map_err(DownloadError::Aead)
                             {
                                 Ok(res) => res,
                                 Err(e) => {
-                                    // TODO: inform to user
                                     log::error!("decryption failed: {:?}", e);
+                                    clink.send_message(DownloadMsg::DownloadError(e));
                                     return;
                                 }
                             };
 
+                            clink.send_message(DownloadMsg::Progress(ProgressInfo::DownloadBytes(
+                                buffer.len(),
+                            )));
                             buffer.clear();
                             chunk = &chunk[split_idx..];
-                            total_byte += res.len();
-                            log::info!("processed bytes: {}", total_byte);
 
                             body.extend(res);
                         }
@@ -263,13 +317,65 @@ impl Component for DownloadComponent {
 
                 true
             }
+            DownloadMsg::Filename(v) => {
+                let filename = match String::from_utf8(v) {
+                    Ok(filename) => filename,
+                    Err(_) => "decrypted".into(),
+                };
+                self.decrypted_filename = Some(filename);
+
+                true
+            }
+            DownloadMsg::Progress(info) => {
+                let metadata = match &self.metadata {
+                    Some(m) => match m {
+                        Ok(m) => m,
+                        Err(_) => {
+                            return false;
+                        }
+                    },
+                    None => {
+                        return false;
+                    }
+                };
+                match info {
+                    ProgressInfo::DownloadBytes(b) => {
+                        let before = self.downloaded_size.unwrap_or(0);
+                        let file_size = metadata.size as usize;
+                        let after = if before + b > file_size {
+                            file_size
+                        } else {
+                            before + b
+                        };
+                        self.downloaded_size = Some(after);
+                    }
+                }
+
+                true
+            }
+            DownloadMsg::DownloadError(err) => {
+                self.download_error = Some(err);
+
+                true
+            }
             DownloadMsg::DownloadComplete(decrypted) => {
+                let a = match self.a_ref.cast::<HtmlLinkElement>() {
+                    Some(a) => a,
+                    None => {
+                        self.link
+                            .send_message(DownloadMsg::DownloadError(DownloadError::Other));
+                        log::error!("failed to get a ref");
+                        return false;
+                    }
+                };
                 let bytes = Array::new();
                 bytes.push(&Uint8Array::from(&decrypted[..]));
                 let decrypted_blob = {
                     match web_sys::Blob::new_with_u8_array_sequence(&bytes) {
                         Ok(blob) => blob,
                         Err(err) => {
+                            self.link
+                                .send_message(DownloadMsg::DownloadError(DownloadError::Other));
                             log::error!("failed to make data into blob: {:?}", err);
                             return false;
                         }
@@ -279,13 +385,21 @@ impl Component for DownloadComponent {
                     match Url::create_object_url_with_blob(&decrypted_blob) {
                         Ok(u) => u,
                         Err(err) => {
+                            self.link
+                                .send_message(DownloadMsg::DownloadError(DownloadError::Other));
                             log::error!("failed to make blob into object url: {:?}", err);
                             return false;
                         }
                     }
                 };
 
-                log::info!("obj_url: {}", obj_url);
+                a.set_href(&obj_url);
+                a.click();
+
+                if let Err(e) = Url::revoke_object_url(&obj_url) {
+                    log::error!("failed to revoke object url: {:?}", e);
+                }
+
                 true
             }
         }
@@ -296,6 +410,9 @@ impl Component for DownloadComponent {
     }
 
     fn view(&self) -> yew::Html {
+        let passphrase_oninput = self.link.callback(|_| DownloadMsg::PassphraseInput);
+        let download_onclick = self.link.callback(|_| DownloadMsg::StartDownload);
+
         let mut button_class = vec![
             "border-solid",
             "bg-gray-700",
@@ -338,8 +455,49 @@ impl Component for DownloadComponent {
             }
         };
 
-        let passphrase_oninput = self.link.callback(|_| DownloadMsg::PassphraseInput);
-        let download_onclick = self.link.callback(|_| DownloadMsg::StartDownload);
+        let mut download_byte_class = vec!["flex", "justify-center"];
+        let mut progress_class = vec!["flex", "relative", "pt-1", "justify-center"];
+        let metadata_available = match &self.metadata {
+            Some(m) => m.is_ok(),
+            None => false,
+        };
+        if !metadata_available || self.downloaded_size.is_none() {
+            download_byte_class.push("hidden");
+            progress_class.push("hidden");
+        }
+        let downloaded = self.downloaded_size.unwrap_or(0);
+        let file_size = match &self.metadata {
+            Some(m) => match m {
+                Ok(m) => m.size,
+                Err(_) => 0,
+            },
+            None => 0,
+        } as usize;
+        let progress_percent_width = if file_size == 0 {
+            0
+        } else {
+            ((downloaded as f64 / file_size as f64) * (100_f64)) as usize
+        };
+
+        let mut download_error_class = vec!["flex", "justify-center", "mb-4"];
+        if self.download_error.is_none() {
+            download_error_class.push("hidden");
+        }
+        let download_error_text: Cow<str> = match &self.download_error {
+            Some(err) => match err {
+                DownloadError::KeyGeneration(msg) => format!("Key error: {}", msg).into(),
+                DownloadError::JsValue(_) => "File read error".into(),
+                DownloadError::Aead(_) => "Encryption error".into(),
+                DownloadError::Other => "Unknown error".into(),
+            },
+            None => "".into(),
+        };
+        let download_error_component = html! {
+            <div class=classes!(download_error_class)>
+                <span class=classes!("text-red-300")>{ download_error_text }</span>
+            </div>
+        };
+        let decrypted_filename = self.decrypted_filename.clone().unwrap_or_else(|| "".into());
 
         html! {
             <>
@@ -357,6 +515,14 @@ impl Component for DownloadComponent {
                         oninput={passphrase_oninput}
                     />
                 </div>
+                <div class=classes!("flex", "justify-center", "mt-5")>
+                    <p class=classes!("text-gray-300", "mb-3")>{ &decrypted_filename }</p>
+                </div>
+                <div class=classes!(progress_class)>
+                    <div class=classes!("overflow-hidden", "h-2", "mb-4", "text-xs", "flex", "rounded", "bg-blue-200", "w-1/2", "mt-4")>
+                        <div style={format!("width:{}%", progress_percent_width)} class=classes!("shadow-none", "flex", "flex-col", "text-center", "whitespace-nowrap", "text-white", "justify-center", "bg-blue-400")></div>
+                    </div>
+                </div>
                 <div class=classes!("flex", "justify-center")>
                     <button
                         disabled={disabled || !self.passphrase_available}
@@ -365,6 +531,8 @@ impl Component for DownloadComponent {
                         { "DOWNLOAD" }
                     </button>
                 </div>
+                { download_error_component }
+                <a download={decrypted_filename} class=classes!("hidden") ref={self.a_ref.clone()}></a>
             </>
         }
     }
