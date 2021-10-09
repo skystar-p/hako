@@ -508,7 +508,7 @@ impl Component for DownloadComponent {
             Some(err) => match err {
                 DownloadError::KeyGeneration(msg) => format!("Key error: {}", msg).into(),
                 DownloadError::JsValue(_) => "File read error".into(),
-                DownloadError::Aead(_) => "Encryption error".into(),
+                DownloadError::Aead(_) => "Decryption error".into(),
                 DownloadError::Other => "Unknown error".into(),
             },
             None => "".into(),
