@@ -1,5 +1,5 @@
-// pub const BLOCK_SIZE: usize = 1024 * 1024 * 10;
-pub const BLOCK_SIZE: usize = 1024 * 128;
+pub const BLOCK_SIZE: usize = 1024 * 1024 * 10;
+// pub const BLOCK_SIZE: usize = 1024 * 128;
 pub const BLOCK_OVERHEAD: usize = 16;
 
 const BASE_URL: &str = "http://localhost:12321";
