@@ -1,5 +1,8 @@
 # Hako
-Simple file sharing with client-side encryption, powered by Rust and WebAssembly
+Simple file sharing with client-side encryption, powered by Rust and WebAssembly  
+  
+Not feature-packed, but basic functionalities are just working. Feature requests and PR are very welcome.
+
 ## Features
 * Handy file sharing
 * Client-side encryption using `XChacha20Poly1305`
