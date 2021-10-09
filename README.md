@@ -1,5 +1,7 @@
 # Hako
 Simple file sharing with client-side encryption, powered by Rust and WebAssembly  
+
+![preview](./res/preview.png)
   
 Not feature-packed, but basic functionalities are just working. Feature requests and PR are very welcome.
 
