@@ -231,7 +231,7 @@ impl Component for UploadComponent {
                         .part("salt", Part::stream(salt.to_vec()))
                         .part("filename", Part::stream(encrypted_filename));
                     let file_id = match client
-                        .post(build_url("/prepare_upload"))
+                        .post(build_url("/api/prepare_upload"))
                         .multipart(form)
                         .send()
                         .await
@@ -304,7 +304,7 @@ impl Component for UploadComponent {
                                 .part("is_last", Part::bytes(vec![0]))
                                 .part("content", Part::stream(chunk));
                             match client
-                                .post(build_url("/upload"))
+                                .post(build_url("/api/upload"))
                                 .multipart(form)
                                 .send()
                                 .await
@@ -346,7 +346,7 @@ impl Component for UploadComponent {
                         .part("is_last", Part::bytes(vec![1]))
                         .part("content", Part::stream(chunk));
                     match client
-                        .post(build_url("/upload"))
+                        .post(build_url("/api/upload"))
                         .multipart(form)
                         .send()
                         .await

@@ -44,9 +44,9 @@ async fn main() {
     let app = Router::new()
         .route("/api/metadata", get(handlers::metadata))
         .route("/api/download", get(handlers::download))
-        .route("/ping", get(handlers::ping))
-        .route("/prepare_upload", post(handlers::prepare_upload))
-        .route("/upload", post(handlers::upload))
+        .route("/api/ping", get(handlers::ping))
+        .route("/api/prepare_upload", post(handlers::prepare_upload))
+        .route("/api/upload", post(handlers::upload))
         .layer(TraceLayer::new_for_http())
         .layer(AddExtensionLayer::new(shared_state));
 
