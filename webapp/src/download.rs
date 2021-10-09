@@ -368,36 +368,57 @@ impl Component for DownloadComponent {
                         return false;
                     }
                 };
-                let bytes = Array::new();
-                bytes.push(&Uint8Array::from(&decrypted[..]));
-                let decrypted_blob = {
-                    match web_sys::Blob::new_with_u8_array_sequence(&bytes) {
-                        Ok(blob) => blob,
-                        Err(err) => {
-                            self.link
-                                .send_message(DownloadMsg::DownloadError(DownloadError::Other));
-                            log::error!("failed to make data into blob: {:?}", err);
-                            return false;
-                        }
-                    }
-                };
-                let obj_url = {
-                    match Url::create_object_url_with_blob(&decrypted_blob) {
-                        Ok(u) => u,
-                        Err(err) => {
-                            self.link
-                                .send_message(DownloadMsg::DownloadError(DownloadError::Other));
-                            log::error!("failed to make blob into object url: {:?}", err);
-                            return false;
-                        }
-                    }
-                };
 
-                a.set_href(&obj_url);
-                a.click();
+                // Touching filesystem in browser is strictly prohibited because of security
+                // context, so we cannot pipe Vec<u8> into file directly. In order to invoke file
+                // download for user, we have to convert it into `Blob` object and retrieve its
+                // object url(which will resides in memory).
+                // But we cannot use Vec<u8>'s reference directly because `Blob` is immutable
+                // itself, so we have to full-copy the whole buffer. Not efficient of course...
+                // In addition, copying WASM's linear memory into JS's `Uint8Array` also cause full
+                // copy of buffer, which is worse... (consumes `file_size` * 3 amount of memory)
+                // So in here, we use unsafe method `Uint8Array::view()` which just unsafely map
+                // WASM's memory into linear `Uint8Array`'s memory representation, which will not
+                // cause copy of memory. `mem_view` and decrypted content should have same
+                // lifetime, and those should not be reallocated.
+                unsafe {
+                    let blob_parts = Array::new();
+                    let mem_view = Uint8Array::view(&decrypted);
+                    blob_parts.push(&mem_view);
+                    let decrypted_blob = {
+                        // causes full copy of buffer. this will consumes lots of memory, but there
+                        // are no workaround currently.
+                        match web_sys::Blob::new_with_u8_array_sequence(&blob_parts) {
+                            Ok(blob) => blob,
+                            Err(err) => {
+                                self.link
+                                    .send_message(DownloadMsg::DownloadError(DownloadError::Other));
+                                log::error!("failed to make data into blob: {:?}", err);
+                                return false;
+                            }
+                        }
+                    };
+                    let obj_url = {
+                        match Url::create_object_url_with_blob(&decrypted_blob) {
+                            Ok(u) => u,
+                            Err(err) => {
+                                self.link
+                                    .send_message(DownloadMsg::DownloadError(DownloadError::Other));
+                                log::error!("failed to make blob into object url: {:?}", err);
+                                return false;
+                            }
+                        }
+                    };
 
-                if let Err(e) = Url::revoke_object_url(&obj_url) {
-                    log::error!("failed to revoke object url: {:?}", e);
+                    a.set_href(&obj_url);
+                    // invoke download action
+                    a.click();
+
+                    // immediately revoke object url so that memory consumed by `Blob` object will
+                    // soon released by GC.
+                    if let Err(e) = Url::revoke_object_url(&obj_url) {
+                        log::error!("failed to revoke object url: {:?}", e);
+                    }
                 }
 
                 true
