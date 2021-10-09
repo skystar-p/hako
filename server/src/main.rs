@@ -35,7 +35,10 @@ async fn main() {
 
     let pool = db_config.create_pool(NoTls).unwrap();
 
-    let shared_state = Arc::new(State { pool });
+    let shared_state = Arc::new(State {
+        pool,
+        config: config.clone(),
+    });
     let worker_state = shared_state.clone();
 
     let app = Router::new()

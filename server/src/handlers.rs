@@ -192,6 +192,7 @@ pub async fn upload(
     let mut is_last: Option<Bytes> = None;
     let mut content: Option<Bytes> = None;
 
+    let config = &state.0.config;
     while let Ok(field) = multipart.0.next_field().await {
         if let Some(field) = field {
             let name = {
@@ -233,6 +234,14 @@ pub async fn upload(
                         log::error!("invalid seq length: {}", bytes.len());
                         return Err(StatusCode::BAD_REQUEST);
                     }
+                    // check if chunk sequence is too big
+                    let seq_u64 = bytes.to_vec().try_into().unwrap();
+                    let seq_u64 = i64::from_be_bytes(seq_u64) as u64;
+                    if seq_u64 > config.chunk_count_limit {
+                        log::error!("seq too large: {}", seq_u64);
+                        return Err(StatusCode::BAD_REQUEST);
+                    }
+
                     seq = Some(bytes);
                 }
                 "is_last" => {
