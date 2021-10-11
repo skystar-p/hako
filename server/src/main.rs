@@ -27,11 +27,11 @@ async fn main() {
 
     // setup database connetion pool
     let mut db_config = Config::new();
-    db_config.host = Some("localhost".into());
-    db_config.port = Some(5432);
-    db_config.user = Some("skystar".into());
-    db_config.password = Some("skystar".into());
-    db_config.dbname = Some("hako".into());
+    db_config.host = Some(config.postgres_host.clone());
+    db_config.port = Some(config.postgres_port);
+    db_config.user = Some(config.postgres_user.clone());
+    db_config.password = Some(config.postgres_password.clone());
+    db_config.dbname = Some(config.postgres_dbname.clone());
 
     let pool = db_config.create_pool(NoTls).unwrap();
 
