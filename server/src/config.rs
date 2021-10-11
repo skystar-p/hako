@@ -2,7 +2,7 @@ use structopt::StructOpt;
 
 #[derive(Debug, Clone, StructOpt)]
 pub struct Config {
-    #[structopt(long)]
+    #[structopt(long, default_value = "127.0.0.1:12321")]
     pub bind_addr: String,
 
     #[structopt(long)]

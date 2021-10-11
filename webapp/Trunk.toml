@@ -3,9 +3,9 @@ target = "index.html"
 release = false
 dist = "dist"
 
-# [[proxy]]
-# backend = "http://localhost:12321/"
-# rewrite = "/api"
+[[proxy]]
+backend = "http://localhost:12321/api"
+rewrite = "/api"
 
 [[hooks]]
 stage = "pre_build"
