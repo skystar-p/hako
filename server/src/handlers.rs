@@ -379,7 +379,7 @@ pub async fn metadata(
             }
         },
         None => {
-            log::error!("require id");
+            log::error!("requires id");
             return Err(StatusCode::BAD_REQUEST);
         }
     };
@@ -529,7 +529,6 @@ pub async fn download(
 
         // extract last_seq
         let last_seq: i64 = result.get(0);
-        log::info!("file id: {}, last_seq is {}", id, last_seq);
 
         for seq in 1..=last_seq {
             // prepare statement
@@ -571,7 +570,6 @@ pub async fn download(
             // extract fields
             let content: Vec<u8> = result.get(0);
 
-            log::info!("file id: {}, sending chunk {}", id, seq);
             match sender.send_data(Bytes::from(content)).await {
                 Ok(_) => {}
                 Err(e) => {
