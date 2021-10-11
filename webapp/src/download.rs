@@ -13,7 +13,7 @@ use wasm_bindgen_futures::{spawn_local, JsFuture};
 use yew::web_sys::*;
 use yew::{classes, html, Component, ComponentLink, NodeRef, Properties};
 
-use crate::utils::{build_url, BLOCK_OVERHEAD, BLOCK_SIZE};
+use crate::utils::{join_uri, BLOCK_OVERHEAD, BLOCK_SIZE};
 
 pub enum DownloadMsg {
     Metadata(Result<FileMetadata, MetadataError>),
@@ -46,6 +46,7 @@ pub enum ProgressInfo {
 
 pub struct DownloadComponent {
     link: ComponentLink<Self>,
+    base_uri: String,
     passphrase_ref: NodeRef,
     a_ref: NodeRef,
     passphrase_available: bool,
@@ -74,10 +75,10 @@ pub struct FileMetadata {
     size: i64,
 }
 
-async fn get_file_metadata(id: i64) -> Result<FileMetadata, MetadataError> {
+async fn get_file_metadata(base_uri: &str, id: i64) -> Result<FileMetadata, MetadataError> {
     let client = reqwest::Client::new();
     let resp = client
-        .get(build_url("/api/metadata"))
+        .get(join_uri(base_uri, "/api/metadata"))
         .query(&[("id", id)])
         .send()
         .await;
@@ -109,12 +110,15 @@ async fn get_file_metadata(id: i64) -> Result<FileMetadata, MetadataError> {
 
 // function for streaming download. reqwest does not support stream in wasm environment
 // so directly use `fetch()` and use `ReadableStream` from its body.
-async fn get_download_stream(id: i64) -> Result<wasm_streams::ReadableStream, JsValue> {
+async fn get_download_stream(
+    base_uri: &str,
+    id: i64,
+) -> Result<wasm_streams::ReadableStream, JsValue> {
     let mut opts = RequestInit::new();
     opts.method("GET");
 
     let url = format!("/api/download?id={}", id);
-    let url = build_url(&url);
+    let url = join_uri(base_uri, &url);
     let request = Request::new_with_str_and_init(&url, &opts)?;
 
     let window = window().unwrap();
@@ -133,11 +137,13 @@ impl Component for DownloadComponent {
     type Properties = DownloadProps;
 
     fn create(props: Self::Properties, link: ComponentLink<Self>) -> Self {
+        let base_uri = yew::utils::window().origin();
         // fetch file metadata
         let id = props.id;
         let clink = link.clone();
+        let base_uri_cloned = base_uri.clone();
         spawn_local(async move {
-            match get_file_metadata(id).await {
+            match get_file_metadata(&base_uri_cloned, id).await {
                 Ok(metadata) => clink.send_message(DownloadMsg::Metadata(Ok(metadata))),
                 Err(e) => clink.send_message(DownloadMsg::Metadata(Err(e))),
             }
@@ -145,6 +151,7 @@ impl Component for DownloadComponent {
 
         Self {
             link,
+            base_uri,
             passphrase_ref: NodeRef::default(),
             a_ref: NodeRef::default(),
             passphrase_available: false,
@@ -229,8 +236,9 @@ impl Component for DownloadComponent {
                 let file_id = self.file_id;
                 let metadata = metadata.clone();
                 let clink = self.link.clone();
+                let base_uri = self.base_uri.clone();
                 spawn_local(async move {
-                    let stream = match get_download_stream(file_id).await {
+                    let stream = match get_download_stream(&base_uri, file_id).await {
                         Ok(stream) => stream,
                         Err(e) => {
                             log::error!("cannot get stream: {:?}", e);

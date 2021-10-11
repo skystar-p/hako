@@ -2,10 +2,18 @@ pub const BLOCK_SIZE: usize = 1024 * 1024 * 10;
 // pub const BLOCK_SIZE: usize = 1024 * 128;
 pub const BLOCK_OVERHEAD: usize = 16;
 
-const BASE_URL: &str = "http://localhost:12321";
-
-pub fn build_url(relative: &str) -> String {
-    format!("{}{}", BASE_URL, relative)
+pub fn join_uri(base_uri: &str, rest: &str) -> String {
+    if base_uri.ends_with('/') {
+        if let Some(stripped) = rest.strip_prefix('/') {
+            format!("{}{}", base_uri, stripped)
+        } else {
+            format!("{}{}", base_uri, rest)
+        }
+    } else if rest.starts_with('/') {
+        format!("{}{}", base_uri, rest)
+    } else {
+        format!("{}/{}", base_uri, rest)
+    }
 }
 
 pub mod base64 {

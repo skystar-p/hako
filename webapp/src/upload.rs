@@ -15,7 +15,7 @@ use yew::{
     classes, html, web_sys::HtmlInputElement, ChangeData, Component, ComponentLink, Html, NodeRef,
 };
 
-use crate::utils::{build_url, BLOCK_SIZE};
+use crate::utils::{join_uri, BLOCK_SIZE};
 
 pub enum UploadMsg {
     FileChanged(web_sys::File),
@@ -39,7 +39,7 @@ pub enum ProgressInfo {
 
 pub struct UploadComponent {
     link: ComponentLink<Self>,
-    base_uri: Option<String>,
+    base_uri: String,
     selected_file: Option<web_sys::File>,
     passphrase_ref: NodeRef,
     passphrase_available: bool,
@@ -72,23 +72,12 @@ fn file_input(comp: &UploadComponent) -> Html {
     }
 }
 
-fn join_uri(base_uri: &str, file_id: i64) -> String {
-    if base_uri.ends_with('/') {
-        format!("{}{}", base_uri, file_id)
-    } else {
-        format!("{}/{}", base_uri, file_id)
-    }
-}
-
 impl Component for UploadComponent {
     type Message = UploadMsg;
     type Properties = ();
 
     fn create(_props: Self::Properties, link: ComponentLink<Self>) -> Self {
-        let base_uri = match yew::utils::document().base_uri() {
-            Ok(uri) => uri,
-            Err(_) => None,
-        };
+        let base_uri = yew::utils::window().origin();
 
         Self {
             link,
@@ -217,6 +206,7 @@ impl Component for UploadComponent {
                 let stream_nonce = *stream_nonce;
                 let filename_nonce = *filename_nonce;
                 let clink = self.link.clone();
+                let base_uri = self.base_uri.clone();
 
                 // core logic of streaming upload / encryption
                 let encrypt_routine = async move {
@@ -231,7 +221,7 @@ impl Component for UploadComponent {
                         .part("salt", Part::stream(salt.to_vec()))
                         .part("filename", Part::stream(encrypted_filename));
                     let file_id = match client
-                        .post(build_url("/api/prepare_upload"))
+                        .post(join_uri(&base_uri, "/api/prepare_upload"))
                         .multipart(form)
                         .send()
                         .await
@@ -304,7 +294,7 @@ impl Component for UploadComponent {
                                 .part("is_last", Part::bytes(vec![0]))
                                 .part("content", Part::stream(chunk));
                             match client
-                                .post(build_url("/api/upload"))
+                                .post(join_uri(&base_uri, "/api/upload"))
                                 .multipart(form)
                                 .send()
                                 .await
@@ -346,7 +336,7 @@ impl Component for UploadComponent {
                         .part("is_last", Part::bytes(vec![1]))
                         .part("content", Part::stream(chunk));
                     match client
-                        .post(build_url("/api/upload"))
+                        .post(join_uri(&base_uri, "/api/upload"))
                         .multipart(form)
                         .send()
                         .await
@@ -454,24 +444,13 @@ impl Component for UploadComponent {
         if self.file_id.is_none() || self.upload_error.is_some() {
             file_uri_class.push("hidden");
         }
-        let file_uri_component = match &self.base_uri {
-            Some(base_uri) => {
-                html! {
-                    <div class=classes!(file_uri_class)>
-                        <span class=classes!("mr-2")>{ "Your file: " }</span>
-                        <a class=classes!("text-blue-400") target="_blank" href={join_uri(base_uri, self.file_id.unwrap_or(0))}>
-                            { join_uri(base_uri, self.file_id.unwrap_or(0)) }
-                        </a>
-                    </div>
-                }
-            }
-            None => {
-                html! {
-                    <div class=classes!(file_uri_class)>
-                        <span>{ format!("Your file id: {}", self.file_id.unwrap_or(0)) }</span>
-                    </div>
-                }
-            }
+        let file_uri_component = html! {
+            <div class=classes!(file_uri_class)>
+                <span class=classes!("mr-2")>{ "Your file: " }</span>
+                <a class=classes!("text-blue-400") target="_blank" href={join_uri(&self.base_uri, &self.file_id.unwrap_or(0).to_string())}>
+                    { join_uri(&self.base_uri, &self.file_id.unwrap_or(0).to_string()) }
+                </a>
+            </div>
         };
 
         let mut upload_error_class = vec!["flex", "justify-center", "mb-4"];
