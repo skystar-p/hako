@@ -13,7 +13,7 @@ Not feature-packed, but basic functionalities are just working. Feature requests
 * Asynchronous upload, encryption, download, and decryption on your browser.
 
 ## Why?
-Sharing file safely between two devices is quite annoying. Hardware mediums(like USB flash memory) can be useful, but sharing file between mobile devices or different operating systemss are frustrating.
+Sharing file safely between two devices is quite annoying. Hardware mediums(like USB flash memory) can be useful, but sharing file between mobile devices or different operating systems are frustrating.
 You can go with third-party file hosting server or E-mail, but those are not safe and not good for your privacy.  
 Hako is web application, which gives you great compatibility among various devices and operating systems. Also, Hako uses client-side encryption, so no one can see your original file, even the Hako server.
 
