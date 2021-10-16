@@ -33,15 +33,15 @@ impl Component for MainComponent {
                     <h1 class=classes!("text-center", "text-6xl", "text-gray-300", "font-sans", "m-5")>
                         { "Hako" }
                     </h1>
-                <Router<AppRoute>
-                    render = Router::render(|switch: AppRoute| {
-                        match switch {
-                            AppRoute::Upload => html! { <UploadComponent /> },
-                            AppRoute::Download(id) => html! { <DownloadComponent id=id /> },
-                        }
-                    })
-                    redirect = Router::redirect(|_| { AppRoute::Upload })
-                />
+                    <Router<AppRoute>
+                        render = Router::render(|switch: AppRoute| {
+                            match switch {
+                                AppRoute::Upload => html! { <UploadComponent /> },
+                                AppRoute::Download(id) => html! { <DownloadComponent id=id /> },
+                            }
+                        })
+                        redirect = Router::redirect(|_| { AppRoute::Upload })
+                    />
                 </div>
             </div>
         }
