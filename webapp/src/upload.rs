@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use aead::generic_array::GenericArray;
 use chacha20poly1305::aead::{Aead, NewAead};
-use chacha20poly1305::{Key, XChaCha20Poly1305};
+use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use futures_util::{FutureExt, TryStreamExt};
 use hkdf::Hkdf;
 use js_sys::Uint8Array;
@@ -12,7 +12,9 @@ use sha2::Sha256;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use yew::{
-    classes, html, web_sys::HtmlInputElement, ChangeData, Component, ComponentLink, Html, NodeRef,
+    classes, html,
+    web_sys::{HtmlInputElement, HtmlTextAreaElement},
+    ChangeData, Component, ComponentLink, Html, NodeRef,
 };
 
 use crate::utils::{join_uri, BLOCK_SIZE};
@@ -20,7 +22,9 @@ use crate::utils::{join_uri, BLOCK_SIZE};
 pub enum UploadMsg {
     FileChanged(web_sys::File),
     PassphraseInput,
-    UploadStart,
+    ChangeUploadType,
+    FileUploadStart,
+    TextUploadStart,
     Progress(ProgressInfo),
     UploadError(UploadError),
     UploadComplete(i64),
@@ -33,6 +37,12 @@ pub enum UploadError {
     Remote(String),
 }
 
+#[derive(Clone)]
+pub enum UploadType {
+    File,
+    Text,
+}
+
 pub enum ProgressInfo {
     UploadBytes(usize),
 }
@@ -41,6 +51,8 @@ pub struct UploadComponent {
     link: ComponentLink<Self>,
     base_uri: String,
     selected_file: Option<web_sys::File>,
+    upload_type: UploadType,
+    textarea_ref: NodeRef,
     passphrase_ref: NodeRef,
     passphrase_available: bool,
     file_size: Option<usize>,
@@ -72,6 +84,15 @@ fn file_input(comp: &UploadComponent) -> Html {
     }
 }
 
+fn text_input(comp: &UploadComponent) -> Html {
+    html! {
+        <div class=classes!("flex", "justify-center")>
+            <textarea ref={comp.textarea_ref.clone()} class=classes!("w-1/2") rows=6>
+            </textarea>
+        </div>
+    }
+}
+
 impl Component for UploadComponent {
     type Message = UploadMsg;
     type Properties = ();
@@ -83,6 +104,8 @@ impl Component for UploadComponent {
             link,
             base_uri,
             selected_file: None,
+            upload_type: UploadType::File,
+            textarea_ref: NodeRef::default(),
             passphrase_ref: NodeRef::default(),
             passphrase_available: false,
             file_size: None,
@@ -113,7 +136,18 @@ impl Component for UploadComponent {
                 }
                 true
             }
-            UploadMsg::UploadStart => {
+            UploadMsg::ChangeUploadType => {
+                match self.upload_type {
+                    UploadType::File => {
+                        self.upload_type = UploadType::Text;
+                    }
+                    UploadType::Text => {
+                        self.upload_type = UploadType::File;
+                    }
+                }
+                true
+            }
+            UploadMsg::FileUploadStart => {
                 self.upload_error = None;
                 self.file_id = None;
                 self.uploaded_size = None;
@@ -216,7 +250,7 @@ impl Component for UploadComponent {
                     // send prepare request
                     let client = reqwest::Client::new();
                     let form = Form::new()
-                        .part("stream_nonce", Part::stream(stream_nonce.to_vec()))
+                        .part("nonce", Part::stream(stream_nonce.to_vec()))
                         .part("filename_nonce", Part::stream(filename_nonce.to_vec()))
                         .part("salt", Part::stream(salt.to_vec()))
                         .part("filename", Part::stream(encrypted_filename));
@@ -371,6 +405,162 @@ impl Component for UploadComponent {
 
                 true
             }
+            UploadMsg::TextUploadStart => {
+                self.upload_error = None;
+                self.file_id = None;
+                self.uploaded_size = None;
+                if !self.passphrase_available {
+                    return false;
+                }
+                // get content from textarea
+                let content = if let Some(input) = self.textarea_ref.cast::<HtmlTextAreaElement>() {
+                    input.value()
+                } else {
+                    log::error!("cannot get content string from textarea");
+                    return false;
+                };
+                if content.is_empty() {
+                    return false;
+                }
+
+                // get passphrase from input
+                let passphrase = if let Some(input) = self.passphrase_ref.cast::<HtmlInputElement>()
+                {
+                    input.value()
+                } else {
+                    log::error!("cannot get passphrase string from input");
+                    return false;
+                };
+
+                // generate salt for hkdf expand()
+                let mut salt = [0u8; 32];
+                if let Err(err) = getrandom::getrandom(&mut salt) {
+                    log::error!("cannot get random salt value: {:?}", err);
+                    return false;
+                }
+
+                // generate key by hkdf
+                let h = Hkdf::<Sha256>::new(Some(&salt), passphrase.as_bytes());
+                let mut key_slice = [0u8; 32];
+                if let Err(err) = h.expand(&[], &mut key_slice[..]) {
+                    log::error!("cannot expand passphrase by hkdf: {:?}", err);
+                    return false;
+                }
+
+                let key = Key::from_slice(&key_slice);
+                let cipher = XChaCha20Poly1305::new(key);
+
+                // generate nonce for XChaCha20Poly1305
+                let mut nonce = [0u8; 24];
+                if let Err(err) = getrandom::getrandom(&mut nonce) {
+                    log::error!("cannot get random nonce value: {:?}", err);
+                    return false;
+                }
+                let nonce = XNonce::from_slice(&nonce);
+
+                let encrypted = match cipher.encrypt(nonce, content.as_bytes()) {
+                    Ok(encrypted) => encrypted,
+                    Err(e) => {
+                        self.link
+                            .send_message(UploadMsg::UploadError(UploadError::Aead(e)));
+                        return false;
+                    }
+                };
+
+                let base_uri = self.base_uri.clone();
+                let nonce = *nonce;
+                let encrypt_f = async move {
+                    let client = reqwest::Client::new();
+                    let form = Form::new()
+                        .part("is_text", Part::bytes(vec![1]))
+                        .part("nonce", Part::stream(nonce.to_vec()))
+                        .part("salt", Part::stream(salt.to_vec()));
+                    let file_id = match client
+                        .post(join_uri(&base_uri, "/api/prepare_upload"))
+                        .multipart(form)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => {
+                            if resp.status() != 200 {
+                                return Err(UploadError::Remote(format!(
+                                    "prepare_upload status != 200, but {}",
+                                    resp.status()
+                                )));
+                            }
+                            let b = {
+                                match resp.bytes().await {
+                                    Ok(b) => b.to_vec(),
+                                    Err(_) => {
+                                        return Err(UploadError::Remote(
+                                            "failed to read resp body".into(),
+                                        ));
+                                    }
+                                }
+                            };
+                            match serde_json::from_slice::<Value>(b.as_ref()) {
+                                Ok(v) => {
+                                    if let Some(v) = v.get("id").and_then(Value::as_i64) {
+                                        v
+                                    } else {
+                                        return Err(UploadError::Remote(
+                                            "failed to deserialize body".into(),
+                                        ));
+                                    }
+                                }
+                                Err(_) => {
+                                    return Err(UploadError::Remote(
+                                        "failed to deserialize body".into(),
+                                    ));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("remote error: {:?}", e);
+                            return Err(UploadError::Remote(
+                                "failed to request prepare_upload".into(),
+                            ));
+                        }
+                    };
+
+                    let id = file_id.to_be_bytes();
+                    let seq = 1_i64.to_be_bytes().to_vec();
+                    let form = Form::new()
+                        .part("id", Part::bytes(id.to_vec()))
+                        .part("seq", Part::bytes(seq))
+                        .part("is_last", Part::bytes(vec![1]))
+                        .part("content", Part::stream(encrypted));
+                    match client
+                        .post(join_uri(&base_uri, "/api/upload"))
+                        .multipart(form)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => {
+                            if resp.status() != 200 {
+                                return Err(UploadError::Remote(format!(
+                                    "upload status != 200, but {}",
+                                    resp.status()
+                                )));
+                            }
+                        }
+                        Err(_) => {
+                            return Err(UploadError::Remote("failed to upload chunk".into()));
+                        }
+                    };
+
+                    Ok(())
+                };
+
+                let clink = self.link.clone();
+                spawn_local(encrypt_f.map(move |res| {
+                    if let Err(e) = res {
+                        clink.send_message(UploadMsg::UploadError(e));
+                    }
+                }));
+
+                true
+            }
             UploadMsg::Progress(info) => {
                 match info {
                     ProgressInfo::UploadBytes(b) => {
@@ -405,9 +595,21 @@ impl Component for UploadComponent {
     }
 
     fn view(&self) -> Html {
-        let upload_onclick = self.link.callback(|_| UploadMsg::UploadStart);
+        let upload_type = self.upload_type.clone();
+        let upload_onclick = self.link.callback(move |_| match upload_type {
+            UploadType::File => UploadMsg::FileUploadStart,
+            UploadType::Text => UploadMsg::TextUploadStart,
+        });
+        let filetype_change_onclick = self.link.callback(|_| UploadMsg::ChangeUploadType);
         let passphrase_oninput = self.link.callback(|_| UploadMsg::PassphraseInput);
-        let passphrase_hidden = self.selected_file.is_none();
+        let passphrase_hidden = match self.upload_type {
+            UploadType::File => self.selected_file.is_none(),
+            UploadType::Text => false,
+        };
+        let upload_button_disabled = match self.upload_type {
+            UploadType::File => !self.passphrase_available || self.selected_file.is_none(),
+            UploadType::Text => !self.passphrase_available,
+        };
 
         let mut button_class = vec![
             "border-solid",
@@ -418,12 +620,12 @@ impl Component for UploadComponent {
             "my-5",
             "rounded-xl",
         ];
-        if self.passphrase_available {
+        if upload_button_disabled {
+            button_class.push("cursor-not-allowed");
+        } else {
             button_class.push("hover:bg-gray-400");
             button_class.push("hover:text-gray-700");
             button_class.push("cursor-pointer");
-        } else {
-            button_class.push("cursor-not-allowed");
         }
 
         let mut upload_byte_class = vec!["flex", "justify-center"];
@@ -473,7 +675,26 @@ impl Component for UploadComponent {
 
         html! {
             <>
-                { file_input(self) }
+                {
+                    match self.upload_type {
+                        UploadType::File => file_input(self),
+                        UploadType::Text => text_input(self),
+                    }
+
+                }
+                <div class=classes!("flex", "justify-center", "mt-2")>
+                    <pre class=classes!("text-gray-800")>
+                        { "...or " }
+                    </pre>
+                    <pre class=classes!("text-blue-700", "hover:text-blue-400", "cursor-pointer") onclick={filetype_change_onclick}>
+                        {
+                            match self.upload_type {
+                                UploadType::File => "Text",
+                                UploadType::Text => "File",
+                            }
+                        }
+                    </pre>
+                </div>
                 <div class=classes!("flex", "justify-center", "mt-5")>
                     <p class=classes!("text-gray-300", "mb-3")>{ self.selected_file.as_ref().map_or("".into(), |f: &web_sys::File| f.name()) }</p>
                 </div>
@@ -500,7 +721,7 @@ impl Component for UploadComponent {
                 </div>
                 <div class=classes!("flex", "justify-center")>
                     <button
-                        disabled={!self.passphrase_available}
+                        disabled={upload_button_disabled}
                         onclick={upload_onclick}
                         class=classes!(button_class)>
                         { "UPLOAD" }
