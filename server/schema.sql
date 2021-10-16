@@ -5,7 +5,8 @@ create table files (
     filename bytea not null,
     salt bytea not null check (length(salt) = 32),
     nonce bytea not null,
-    filename_nonce bytea not null check (length(filename_nonce) = 24),
+    filename_nonce bytea not null,
+    is_text boolean not null default false,
     upload_complete boolean not null default false
 );
 
