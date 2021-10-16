@@ -27,9 +27,10 @@ pub async fn prepare_upload(
     mut multipart: ContentLengthLimit<Multipart, PREPARE_LENGTH_LIMIT>,
 ) -> Result<Json<PrepareUploadResp>, StatusCode> {
     let mut salt: Option<Bytes> = None;
-    let mut stream_nonce: Option<Bytes> = None;
+    let mut nonce: Option<Bytes> = None;
     let mut filename_nonce: Option<Bytes> = None;
     let mut filename: Option<Bytes> = None;
+    let mut is_text: bool = false;
 
     while let Ok(field) = multipart.0.next_field().await {
         if let Some(field) = field {
@@ -43,7 +44,7 @@ pub async fn prepare_upload(
 
             // check field name first, then read body
             match name.as_ref() {
-                "salt" | "stream_nonce" | "filename_nonce" | "filename" => {}
+                "salt" | "nonce" | "filename_nonce" | "filename" | "is_text" => {}
                 _ => {
                     // unallowed part. ignore
                     continue;
@@ -69,13 +70,14 @@ pub async fn prepare_upload(
                     }
                     salt = Some(bytes);
                 }
-                "stream_nonce" => {
+                "nonce" => {
                     // stream nonce should have 19 bytes length
-                    if bytes.len() != 19 {
-                        log::error!("invalid stream nonce length: {}", bytes.len());
+                    // or, if text mode, then should have 24 bytes length
+                    if bytes.len() != 19 && bytes.len() != 24 {
+                        log::error!("invalid nonce length: {}", bytes.len());
                         return Err(StatusCode::BAD_REQUEST);
                     }
-                    stream_nonce = Some(bytes);
+                    nonce = Some(bytes);
                 }
                 "filename_nonce" => {
                     // filename nonce should have 24 bytes length
@@ -88,6 +90,12 @@ pub async fn prepare_upload(
                 "filename" => {
                     filename = Some(bytes);
                 }
+                "is_text" => {
+                    if bytes.len() != 1 {
+                        return Err(StatusCode::BAD_REQUEST);
+                    }
+                    is_text = bytes.to_vec()[0] != 0;
+                }
                 _ => {}
             }
         } else {
@@ -95,10 +103,14 @@ pub async fn prepare_upload(
         }
     }
 
-    if [&salt, &stream_nonce, &filename_nonce, &filename]
-        .iter()
-        .any(|o| o.is_none())
-    {
+    if !is_text {
+        if [&salt, &nonce, &filename_nonce, &filename]
+            .iter()
+            .any(|o| o.is_none())
+        {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    } else if [&salt, &nonce].iter().any(|o| o.is_none()) {
         return Err(StatusCode::BAD_REQUEST);
     }
 
@@ -126,7 +138,7 @@ pub async fn prepare_upload(
     };
 
     // prepare statement
-    let query = "insert into files (filename, salt, stream_nonce, filename_nonce) values ($1, $2, $3, $4) returning id";
+    let query = "insert into files (filename, salt, nonce, filename_nonce, is_text) values ($1, $2, $3, $4, $5) returning id";
     let stmt = {
         match tx.prepare(query).await {
             Ok(stmt) => stmt,
@@ -142,10 +154,11 @@ pub async fn prepare_upload(
         .query(
             &stmt,
             &[
-                &filename.unwrap().to_vec(),
+                &filename.unwrap_or_default().to_vec(),
                 &salt.unwrap().to_vec(),
-                &stream_nonce.unwrap().to_vec(),
-                &filename_nonce.unwrap().to_vec(),
+                &nonce.unwrap().to_vec(),
+                &filename_nonce.unwrap_or_default().to_vec(),
+                &is_text,
             ],
         )
         .await;
@@ -352,9 +365,10 @@ pub struct MetadataResp {
     #[serde(with = "super::utils::base64")]
     salt: Vec<u8>,
     #[serde(with = "super::utils::base64")]
-    stream_nonce: Vec<u8>,
+    nonce: Vec<u8>,
     #[serde(with = "super::utils::base64")]
     filename_nonce: Vec<u8>,
+    is_text: bool,
     size: i64,
 }
 
@@ -396,7 +410,7 @@ pub async fn metadata(
     };
 
     // prepare statement
-    let query = "select filename, salt, stream_nonce, filename_nonce, (select sum(length(content)) from file_contents where file_id = $1) from files where id = $1 and upload_complete = true";
+    let query = "select filename, salt, nonce, filename_nonce, is_text, (select sum(length(content)) from file_contents where file_id = $1) from files where id = $1 and upload_complete = true";
     let stmt = {
         match client.prepare(query).await {
             Ok(stmt) => stmt,
@@ -428,22 +442,24 @@ pub async fn metadata(
     }
 
     let result = &result[0];
-    if result.len() != 5 {
+    if result.len() != 6 {
         log::error!("invalid column length: {}", result.len());
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     let filename: Vec<u8> = result.get(0);
     let salt: Vec<u8> = result.get(1);
-    let stream_nonce: Vec<u8> = result.get(2);
+    let nonce: Vec<u8> = result.get(2);
     let filename_nonce: Vec<u8> = result.get(3);
-    let size: i64 = result.get(4);
+    let is_text: bool = result.get(4);
+    let size: i64 = result.get(5);
 
     Ok(Json(MetadataResp {
         filename,
         salt,
-        stream_nonce,
+        nonce,
         filename_nonce,
+        is_text,
         size,
     }))
 }
