@@ -457,13 +457,13 @@ impl Component for UploadComponent {
         if self.upload_error.is_none() {
             upload_error_class.push("hidden");
         }
-        let upload_error_text = match &self.upload_error {
+        let upload_error_text: Cow<str> = match &self.upload_error {
             Some(err) => match err {
-                UploadError::JsValue(_) => Cow::from("File read error"),
-                UploadError::Aead(_) => Cow::from("Encryption error"),
-                UploadError::Remote(msg) => Cow::from(format!("Server error: {}", msg)),
+                UploadError::JsValue(_) => "File read error".into(),
+                UploadError::Aead(_) => "Encryption error".into(),
+                UploadError::Remote(msg) => format!("Server error: {}", msg).into(),
             },
-            None => Cow::from(""),
+            None => "".into(),
         };
         let upload_error_component = html! {
             <div class=classes!(upload_error_class)>
