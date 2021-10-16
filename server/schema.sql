@@ -4,7 +4,7 @@ create table files (
     created_at timestamp with time zone default now(),
     filename bytea not null,
     salt bytea not null check (length(salt) = 32),
-    stream_nonce bytea not null check (length(stream_nonce) = 19),
+    nonce bytea not null,
     filename_nonce bytea not null check (length(filename_nonce) = 24),
     upload_complete boolean not null default false
 );
