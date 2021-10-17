@@ -371,7 +371,7 @@ impl Component for DownloadComponent {
                 }
                 let key = Key::clone_from_slice(&key_slice);
                 let cipher = XChaCha20Poly1305::new(&key);
-                let nonce = XNonce::from_slice(&metadata.nonce).clone();
+                let nonce = *XNonce::from_slice(&metadata.nonce);
 
                 let file_id = self.file_id;
                 let base_uri = self.base_uri.clone();
