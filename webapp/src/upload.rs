@@ -469,6 +469,7 @@ impl Component for UploadComponent {
 
                 let base_uri = self.base_uri.clone();
                 let nonce = *nonce;
+                let clink = self.link.clone();
                 let encrypt_fn = async move {
                     let client = reqwest::Client::new();
                     let form = Form::new()
@@ -548,6 +549,8 @@ impl Component for UploadComponent {
                             return Err(UploadError::Remote("failed to upload chunk".into()));
                         }
                     };
+
+                    clink.send_message(UploadMsg::UploadComplete(file_id));
 
                     Ok(())
                 };
