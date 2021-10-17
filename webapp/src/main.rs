@@ -29,7 +29,7 @@ impl Component for MainComponent {
     fn view(&self) -> Html {
         html! {
             <div class=classes!("bg-gray-500", "h-screen", "flex")>
-                <div class=classes!("m-auto", "min-w-1/2", "border-solid", "border-2", "border-opacity-20", "rounded-xl")>
+                <div class=classes!("m-auto", "min-w-full", "lg:min-w-1/2", "min-h-full", "lg:min-h-0", "border-solid", "border-2", "border-opacity-20", "rounded-xl")>
                     <h1 class=classes!("text-center", "text-6xl", "text-gray-300", "font-sans", "m-5")>
                         { "Hako" }
                     </h1>
