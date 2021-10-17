@@ -2,8 +2,8 @@ use std::borrow::Cow;
 
 use aead::generic_array::GenericArray;
 use chacha20poly1305::aead::{Aead, NewAead};
-use chacha20poly1305::{Key, XChaCha20Poly1305};
-use futures_util::TryStreamExt;
+use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
+use futures_util::{FutureExt, TryStreamExt};
 use hkdf::Hkdf;
 use js_sys::{Array, Uint8Array};
 use serde::Deserialize;
@@ -11,7 +11,7 @@ use sha2::Sha256;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use yew::web_sys::*;
-use yew::{classes, html, Component, ComponentLink, NodeRef, Properties};
+use yew::{classes, html, Component, ComponentLink, Html, NodeRef, Properties};
 
 use crate::utils::{join_uri, BLOCK_OVERHEAD, BLOCK_SIZE};
 
@@ -19,10 +19,13 @@ pub enum DownloadMsg {
     Metadata(Result<FileMetadata, MetadataError>),
     PassphraseInput,
     StartDownload,
+    StartFileDownload(FileMetadata, String),
+    StartTextDownload(FileMetadata, String),
     Filename(Vec<u8>),
     Progress(ProgressInfo),
     DownloadError(DownloadError),
-    DownloadComplete(Vec<u8>),
+    FileDownloadComplete(Vec<u8>),
+    TextDownloadComplete(Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -37,6 +40,7 @@ pub enum DownloadError {
     KeyGeneration(Cow<'static, str>),
     JsValue(JsValue),
     Aead(aead::Error),
+    MetadataError(MetadataError),
     Other,
 }
 
@@ -69,9 +73,10 @@ pub struct FileMetadata {
     #[serde(with = "crate::utils::base64")]
     salt: Vec<u8>,
     #[serde(with = "crate::utils::base64")]
-    stream_nonce: Vec<u8>,
+    nonce: Vec<u8>,
     #[serde(with = "crate::utils::base64")]
     filename_nonce: Vec<u8>,
+    is_text: bool,
     size: i64,
 }
 
@@ -178,17 +183,15 @@ impl Component for DownloadComponent {
                 true
             }
             DownloadMsg::StartDownload => {
-                self.decrypted_filename = None;
-                self.downloaded_size = None;
-                self.download_error = None;
-
-                let metadata = {
-                    match &self.metadata {
-                        Some(m) => match m {
-                            Ok(m) => m,
-                            Err(_) => return false,
-                        },
-                        None => return false,
+                let metadata = match &self.metadata {
+                    Some(res) => match res {
+                        Ok(metadata) => metadata,
+                        Err(_) => {
+                            return false;
+                        }
+                    },
+                    None => {
+                        return false;
                     }
                 };
 
@@ -204,6 +207,21 @@ impl Component for DownloadComponent {
                     return false;
                 };
 
+                self.decrypted_filename = None;
+                self.downloaded_size = None;
+                self.download_error = None;
+
+                if metadata.is_text {
+                    self.link
+                        .send_message(DownloadMsg::StartTextDownload(metadata.clone(), passphrase));
+                } else {
+                    self.link
+                        .send_message(DownloadMsg::StartFileDownload(metadata.clone(), passphrase));
+                }
+
+                true
+            }
+            DownloadMsg::StartFileDownload(metadata, passphrase) => {
                 // decrypt filename first
                 // restore key from passphrase
                 let h = Hkdf::<Sha256>::new(Some(metadata.salt.as_ref()), passphrase.as_bytes());
@@ -258,7 +276,7 @@ impl Component for DownloadComponent {
 
                     // make cipher
                     let cipher = XChaCha20Poly1305::new(&key);
-                    let stream_nonce = GenericArray::from_slice(metadata.stream_nonce.as_ref());
+                    let stream_nonce = GenericArray::from_slice(metadata.nonce.as_ref());
                     let mut decryptor =
                         aead::stream::DecryptorBE32::from_aead(cipher, stream_nonce);
 
@@ -320,8 +338,79 @@ impl Component for DownloadComponent {
                         buffer.extend(chunk);
                     }
 
-                    clink.send_message(DownloadMsg::DownloadComplete(body));
+                    clink.send_message(DownloadMsg::FileDownloadComplete(body));
                 });
+
+                true
+            }
+            DownloadMsg::StartTextDownload(metadata, passphrase) => {
+                // restore key from passphrase
+                let h = Hkdf::<Sha256>::new(Some(metadata.salt.as_ref()), passphrase.as_bytes());
+                let mut key_slice = [0u8; 32];
+                if let Err(err) = h.expand(&[], &mut key_slice[..]) {
+                    log::error!("cannot expand passphrase by hkdf: {:?}", err);
+                    let msg = "cannot expand passphrase by hkdf";
+                    self.link.send_message(DownloadMsg::DownloadError(
+                        DownloadError::KeyGeneration(Cow::from(msg)),
+                    ));
+                    return false;
+                }
+                let key = Key::clone_from_slice(&key_slice);
+                let cipher = XChaCha20Poly1305::new(&key);
+                let nonce = XNonce::from_slice(&metadata.nonce).clone();
+
+                let file_id = self.file_id;
+                let base_uri = self.base_uri.clone();
+                let clink = self.link.clone();
+                let decrypt_fn = async move {
+                    let client = reqwest::Client::new();
+                    let resp = client
+                        .get(join_uri(&base_uri, "/api/download"))
+                        .query(&[("id", file_id)])
+                        .send()
+                        .await;
+                    let resp = match resp {
+                        Ok(resp) => {
+                            if resp.status() == 404 {
+                                return Err(DownloadError::MetadataError(
+                                    MetadataError::FileNotFound,
+                                ));
+                            } else if resp.status() != 200 {
+                                return Err(DownloadError::MetadataError(
+                                    MetadataError::NotAvailable,
+                                ));
+                            }
+                            resp
+                        }
+                        Err(_) => {
+                            return Err(DownloadError::MetadataError(MetadataError::NotAvailable));
+                        }
+                    };
+                    let body = match resp.bytes().await {
+                        Ok(body) => body,
+                        Err(_) => {
+                            return Err(DownloadError::MetadataError(MetadataError::NotAvailable));
+                        }
+                    };
+
+                    let decrypted = match cipher.decrypt(&nonce, body.as_ref()) {
+                        Ok(decrypted) => decrypted,
+                        Err(e) => {
+                            return Err(DownloadError::Aead(e));
+                        }
+                    };
+
+                    clink.send_message(DownloadMsg::TextDownloadComplete(decrypted));
+
+                    Ok(())
+                };
+
+                let clink = self.link.clone();
+                spawn_local(decrypt_fn.map(move |res| {
+                    if let Err(e) = res {
+                        clink.send_message(DownloadMsg::DownloadError(e));
+                    }
+                }));
 
                 true
             }
@@ -366,7 +455,7 @@ impl Component for DownloadComponent {
 
                 true
             }
-            DownloadMsg::DownloadComplete(decrypted) => {
+            DownloadMsg::FileDownloadComplete(decrypted) => {
                 let a = match self.a_ref.cast::<HtmlLinkElement>() {
                     Some(a) => a,
                     None => {
@@ -431,6 +520,7 @@ impl Component for DownloadComponent {
 
                 true
             }
+            DownloadMsg::TextDownloadComplete(decrypted) => true,
         }
     }
 
@@ -438,7 +528,7 @@ impl Component for DownloadComponent {
         false
     }
 
-    fn view(&self) -> yew::Html {
+    fn view(&self) -> Html {
         let passphrase_oninput = self.link.callback(|_| DownloadMsg::PassphraseInput);
         let download_onclick = self.link.callback(|_| DownloadMsg::StartDownload);
 
@@ -517,6 +607,7 @@ impl Component for DownloadComponent {
                 DownloadError::KeyGeneration(msg) => format!("Key error: {}", msg).into(),
                 DownloadError::JsValue(_) => "File read error".into(),
                 DownloadError::Aead(_) => "Decryption error".into(),
+                DownloadError::MetadataError(_) => "File unavailable".into(),
                 DownloadError::Other => "Unknown error".into(),
             },
             None => "".into(),
