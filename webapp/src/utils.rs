@@ -2,7 +2,13 @@ pub const BLOCK_SIZE: usize = 1024 * 1024 * 10;
 // pub const BLOCK_SIZE: usize = 1024 * 128;
 pub const BLOCK_OVERHEAD: usize = 16;
 
-pub fn join_uri(base_uri: &str, rest: &str) -> String {
+pub fn join_uri<P, Q>(base_uri: P, rest: Q) -> String
+where
+    P: AsRef<str>,
+    Q: AsRef<str>,
+{
+    let base_uri = base_uri.as_ref();
+    let rest = rest.as_ref();
     if base_uri.ends_with('/') {
         if let Some(stripped) = rest.strip_prefix('/') {
             format!("{}{}", base_uri, stripped)
