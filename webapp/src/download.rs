@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::string::FromUtf8Error;
 
 use aead::generic_array::GenericArray;
 use chacha20poly1305::aead::{Aead, NewAead};
@@ -10,8 +11,8 @@ use serde::Deserialize;
 use sha2::Sha256;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
-use yew::web_sys::*;
 use yew::{classes, html, Component, ComponentLink, Html, NodeRef, Properties};
+use yew::{web_sys::*, Classes};
 
 use crate::utils::{join_uri, BLOCK_OVERHEAD, BLOCK_SIZE};
 
@@ -41,6 +42,7 @@ pub enum DownloadError {
     JsValue(JsValue),
     Aead(aead::Error),
     MetadataError(MetadataError),
+    Utf8Error(FromUtf8Error),
     Other,
 }
 
@@ -57,6 +59,7 @@ pub struct DownloadComponent {
     file_id: i64,
     metadata: Option<Result<FileMetadata, MetadataError>>,
     decrypted_filename: Option<String>,
+    decrypted_text: Option<String>,
     downloaded_size: Option<usize>,
     download_error: Option<DownloadError>,
 }
@@ -137,6 +140,16 @@ async fn get_download_stream(
     ))
 }
 
+fn text_input(comp: &DownloadComponent, classes: Classes) -> Html {
+    html! {
+        <div class={classes}>
+            <textarea class=classes!("w-1/2") rows=6>
+                { comp.decrypted_text.as_ref().unwrap_or(&"".into()) }
+            </textarea>
+        </div>
+    }
+}
+
 impl Component for DownloadComponent {
     type Message = DownloadMsg;
     type Properties = DownloadProps;
@@ -163,6 +176,7 @@ impl Component for DownloadComponent {
             file_id: props.id,
             metadata: None,
             decrypted_filename: None,
+            decrypted_text: None,
             downloaded_size: None,
             download_error: None,
         }
@@ -472,7 +486,7 @@ impl Component for DownloadComponent {
                 // object url(which will resides in memory).
                 // But we cannot use Vec<u8>'s reference directly because `Blob` is immutable
                 // itself, so we have to full-copy the whole buffer. Not efficient of course...
-                // In addition, copying WASM's linear memory into JS's `Uint8Array` also cause full
+                // In addition, moving WASM's linear memory into JS's `Uint8Array` also cause full
                 // copy of buffer, which is worse... (consumes `file_size` * 3 amount of memory)
                 // So in here, we use unsafe method `Uint8Array::view()` which just unsafely map
                 // WASM's memory into linear `Uint8Array`'s memory representation, which will not
@@ -520,7 +534,19 @@ impl Component for DownloadComponent {
 
                 true
             }
-            DownloadMsg::TextDownloadComplete(decrypted) => true,
+            DownloadMsg::TextDownloadComplete(decrypted) => {
+                let decrypted_str = match String::from_utf8(decrypted) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.link
+                            .send_message(DownloadMsg::DownloadError(DownloadError::Utf8Error(e)));
+                        return false;
+                    }
+                };
+                self.decrypted_text = Some(decrypted_str);
+
+                true
+            }
         }
     }
 
@@ -608,6 +634,7 @@ impl Component for DownloadComponent {
                 DownloadError::JsValue(_) => "File read error".into(),
                 DownloadError::Aead(_) => "Decryption error".into(),
                 DownloadError::MetadataError(_) => "File unavailable".into(),
+                DownloadError::Utf8Error(_) => "UTF-8 conversion error".into(),
                 DownloadError::Other => "Unknown error".into(),
             },
             None => "".into(),
@@ -618,6 +645,13 @@ impl Component for DownloadComponent {
             </div>
         };
         let decrypted_filename = self.decrypted_filename.clone().unwrap_or_else(|| "".into());
+
+        let mut textarea_class = vec!["flex", "justify-center", "mb-4"];
+        if self.decrypted_text.is_none() || self.download_error.is_some() {
+            textarea_class.push("hidden");
+        }
+
+        let textarea_class = classes!(textarea_class);
 
         html! {
             <>
@@ -643,6 +677,7 @@ impl Component for DownloadComponent {
                         <div style={format!("width:{}%", progress_percent_width)} class=classes!("shadow-none", "flex", "flex-col", "text-center", "whitespace-nowrap", "text-white", "justify-center", "bg-blue-400")></div>
                     </div>
                 </div>
+                { text_input(self, textarea_class) }
                 <div class=classes!("flex", "justify-center")>
                     <button
                         disabled={disabled || !self.passphrase_available}
