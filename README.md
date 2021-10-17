@@ -43,8 +43,6 @@ trunk build --release
 ```
 
 ## To-dos
-* Nice mobile web view
-    * can be done easily thanks to tailwindcss
 * Authentication
     * WebAuthn
     * or just plain username-password pair
