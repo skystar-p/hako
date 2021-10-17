@@ -7,6 +7,7 @@ Not feature-packed, but basic functionalities are just working. Feature requests
 
 ## Features
 * Handy file sharing
+* Handy text-snippet sharing
 * Client-side encryption using `XChacha20Poly1305`
 * Fast and safe implementations thanks to [Rust](https://www.rust-lang.org/)
 * Neat Web UI built with WebAssembly
