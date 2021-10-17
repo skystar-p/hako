@@ -469,7 +469,7 @@ impl Component for UploadComponent {
 
                 let base_uri = self.base_uri.clone();
                 let nonce = *nonce;
-                let encrypt_f = async move {
+                let encrypt_fn = async move {
                     let client = reqwest::Client::new();
                     let form = Form::new()
                         .part("is_text", Part::bytes(vec![1]))
@@ -553,7 +553,7 @@ impl Component for UploadComponent {
                 };
 
                 let clink = self.link.clone();
-                spawn_local(encrypt_f.map(move |res| {
+                spawn_local(encrypt_fn.map(move |res| {
                     if let Err(e) = res {
                         clink.send_message(UploadMsg::UploadError(e));
                     }
