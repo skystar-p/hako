@@ -87,7 +87,7 @@ fn file_input(comp: &UploadComponent) -> Html {
 fn text_input(comp: &UploadComponent) -> Html {
     html! {
         <div class=classes!("flex", "justify-center")>
-            <textarea ref={comp.textarea_ref.clone()} class=classes!("w-1/2") rows=6>
+            <textarea ref={comp.textarea_ref.clone()} class=classes!("w-3/4") rows=6>
             </textarea>
         </div>
     }

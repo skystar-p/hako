@@ -143,7 +143,7 @@ async fn get_download_stream(
 fn text_input(comp: &DownloadComponent, classes: Classes) -> Html {
     html! {
         <div class={classes}>
-            <textarea class=classes!("w-1/2") rows=6>
+            <textarea class=classes!("w-3/4") rows=6>
                 { comp.decrypted_text.as_ref().unwrap_or(&"".into()) }
             </textarea>
         </div>
