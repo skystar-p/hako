@@ -279,7 +279,7 @@ pub async fn upload(
         };
 
         // insert row
-        let result = stmt.query(params![&id, &seq, &content.unwrap().to_vec()]);
+        let result = stmt.execute(params![&id, &seq, &content.unwrap().to_vec()]);
         if let Err(err) = result {
             log::error!("failed to query: {:?}", err);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
@@ -288,7 +288,7 @@ pub async fn upload(
 
     if is_last {
         // prepare statement
-        let query = "update files set upload_complete = true where id = $1";
+        let query = "update files set upload_complete = true where id = ?1";
         let mut stmt = {
             match tx.prepare(query) {
                 Ok(stmt) => stmt,
@@ -300,7 +300,7 @@ pub async fn upload(
         };
 
         // update row
-        let result = stmt.query(params![&id]);
+        let result = stmt.execute(params![&id]);
         if let Err(err) = result {
             log::error!("failed to query: {:?}", err);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
