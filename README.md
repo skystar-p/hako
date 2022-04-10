@@ -25,7 +25,6 @@ You need `cargo` to build server. If you don't have it, follow the instructions 
 cd ./server
 cargo build --release
 ```
-Also, to serve your Hako server, running PostgreSQL server is required. See [database schema](./server/schema.sql).
 
 ### Frontend
 You need two additional tools: [`trunk`](https://trunkrs.dev/) and [`tailwindcss`](https://tailwindcss.com/).
@@ -48,8 +47,6 @@ trunk build --release
     * or just plain username-password pair
 * File expiry, download limit
     * Or just LRU
-* No PostgreSQL dependency
-    * By just using unix filesystem and small SQLite database?
 * Performance gain using Web Worker
 * CLI tool
     * WASM can provide compatibility among various environment, and CLI downloader will provide good performance
