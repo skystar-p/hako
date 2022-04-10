@@ -139,10 +139,10 @@ pub async fn prepare_upload(
 
         // insert row
         let result = stmt.query(params![
-            filename.as_ref().unwrap().to_vec(),
-            salt.as_ref().unwrap().to_vec(),
-            nonce.as_ref().unwrap().to_vec(),
-            filename_nonce.as_ref().unwrap().to_vec(),
+            filename.unwrap_or_default().to_vec(),
+            salt.unwrap().to_vec(),
+            nonce.unwrap().to_vec(),
+            filename_nonce.unwrap_or_default().to_vec(),
             is_text,
         ]);
 
