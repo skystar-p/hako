@@ -1,8 +1,9 @@
-use deadpool_postgres::Pool;
+use rusqlite::Connection;
+use tokio::sync::Mutex;
 
 use crate::config::Config;
 
 pub struct State {
-    pub pool: Pool,
+    pub conn: Mutex<Connection>,
     pub config: Config,
 }

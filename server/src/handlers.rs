@@ -6,6 +6,7 @@ use axum::{
     http::StatusCode,
     response::Json,
 };
+use rusqlite::params;
 use serde::Serialize;
 
 use crate::state::State;
@@ -114,78 +115,49 @@ pub async fn prepare_upload(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let pool = &state.0.pool;
+    let conn = &mut state.0.conn.lock().await;
 
-    let mut client = {
-        match pool.get().await {
-            Ok(client) => client,
-            Err(err) => {
-                log::error!("could not get client from pool: {:?}", err);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
+    // begin transaction
+    let tx = match conn.transaction() {
+        Ok(tx) => tx,
+        Err(err) => {
+            log::error!("could not build transaction object: {:?}", err);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
-    // make transaction object
-    let tx = {
-        match client.transaction().await {
-            Ok(tx) => tx,
-            Err(err) => {
-                log::error!("could not build transaction object: {:?}", err);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        }
-    };
-
-    // prepare statement
-    let query = "insert into files (filename, salt, nonce, filename_nonce, is_text) values ($1, $2, $3, $4, $5) returning id";
-    let stmt = {
-        match tx.prepare(query).await {
+    let query = "insert into files (filename, salt, nonce, filename_nonce, is_text) values (?1, ?2, ?3, ?4, ?5) returning id";
+    let id = {
+        // prepare statement
+        let mut stmt = match tx.prepare(query) {
             Ok(stmt) => stmt,
             Err(err) => {
                 log::error!("could not prepare statement: {:?}", err);
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
-        }
-    };
+        };
 
-    // insert row
-    let result = tx
-        .query(
-            &stmt,
-            &[
-                &filename.unwrap_or_default().to_vec(),
-                &salt.unwrap().to_vec(),
-                &nonce.unwrap().to_vec(),
-                &filename_nonce.unwrap_or_default().to_vec(),
-                &is_text,
-            ],
-        )
-        .await;
+        // insert row
+        let result = stmt.query(params![
+            filename.as_ref().unwrap().to_vec(),
+            salt.as_ref().unwrap().to_vec(),
+            nonce.as_ref().unwrap().to_vec(),
+            filename_nonce.as_ref().unwrap().to_vec(),
+            is_text,
+        ]);
 
-    let id = match result {
-        Ok(rows) => {
-            if rows.is_empty() {
-                log::error!("id not returned");
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            } else if rows.len() != 1 {
-                log::error!("multiple id returned");
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-            if rows[0].len() != 1 {
-                log::error!("invalid column length");
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-            let id: i64 = rows[0].get(0);
-            id
-        }
-        Err(err) => {
-            log::error!("failed to query: {:?}", err);
+        let mut rows = result.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let row = rows.next().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        // get returned id
+        if let Some(row) = row {
+            row.get(0).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        } else {
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
+
     // commit
-    if let Err(err) = tx.commit().await {
+    if let Err(err) = tx.commit() {
         log::error!("failed to commit: {:?}", err);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -284,55 +256,41 @@ pub async fn upload(
     let seq = i64::from_be_bytes(seq);
     let is_last = is_last.unwrap()[0] != 0;
 
-    let pool = &state.0.pool;
-
-    let mut client = {
-        match pool.get().await {
-            Ok(client) => client,
-            Err(err) => {
-                log::error!("could not get client from pool: {:?}", err);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        }
-    };
+    let conn = &mut state.0.conn.lock().await;
 
     // make transaction object
-    let tx = {
-        match client.transaction().await {
-            Ok(tx) => tx,
-            Err(err) => {
-                log::error!("could not build transaction object: {:?}", err);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
+    let tx = match conn.transaction() {
+        Ok(tx) => tx,
+        Err(err) => {
+            log::error!("could not build transaction object: {:?}", err);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
     // prepare statement
-    let query = "insert into file_contents (file_id, seq, content) values ($1, $2, $3)";
-    let stmt = {
-        match tx.prepare(query).await {
+    let query = "insert into file_contents (file_id, seq, content) values (?1, ?2, ?3)";
+    {
+        let mut stmt = match tx.prepare(query) {
             Ok(stmt) => stmt,
             Err(err) => {
                 log::error!("could not prepare statement: {:?}", err);
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
-        }
-    };
+        };
 
-    // insert row
-    let result = tx
-        .query(&stmt, &[&id, &seq, &content.unwrap().to_vec()])
-        .await;
-    if let Err(err) = result {
-        log::error!("failed to query: {:?}", err);
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        // insert row
+        let result = stmt.query(params![&id, &seq, &content.unwrap().to_vec()]);
+        if let Err(err) = result {
+            log::error!("failed to query: {:?}", err);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 
     if is_last {
         // prepare statement
         let query = "update files set upload_complete = true where id = $1";
-        let stmt = {
-            match tx.prepare(query).await {
+        let mut stmt = {
+            match tx.prepare(query) {
                 Ok(stmt) => stmt,
                 Err(err) => {
                     log::error!("could not prepare statement: {:?}", err);
@@ -341,8 +299,8 @@ pub async fn upload(
             }
         };
 
-        // insert row
-        let result = tx.query(&stmt, &[&id]).await;
+        // update row
+        let result = stmt.query(params![&id]);
         if let Err(err) = result {
             log::error!("failed to query: {:?}", err);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
@@ -350,7 +308,7 @@ pub async fn upload(
     }
 
     // commit
-    if let Err(err) = tx.commit().await {
+    if let Err(err) = tx.commit() {
         log::error!("failed to commit: {:?}", err);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -397,62 +355,44 @@ pub async fn metadata(
             return Err(StatusCode::BAD_REQUEST);
         }
     };
-    let pool = &state.0.pool;
 
-    let client = {
-        match pool.get().await {
-            Ok(client) => client,
-            Err(err) => {
-                log::error!("could not get client from pool: {:?}", err);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        }
-    };
+    let conn = &mut state.0.conn.lock().await;
 
     // prepare statement
-    let query = "select filename, salt, nonce, filename_nonce, is_text, (select sum(length(content)) from file_contents where file_id = $1) from files where id = $1 and upload_complete = true";
-    let stmt = {
-        match client.prepare(query).await {
-            Ok(stmt) => stmt,
-            Err(err) => {
-                log::error!("could not prepare statement: {:?}", err);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
+    let query = "select filename, salt, nonce, filename_nonce, is_text, (select sum(length(content)) from file_contents where file_id = ?1) from files where id = ?1 and upload_complete = true";
+    let mut stmt = match conn.prepare(query) {
+        Ok(stmt) => stmt,
+        Err(err) => {
+            log::error!("could not prepare statement: {:?}", err);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
     // query metadata
-    let result = {
-        match client.query(&stmt, &[&id]).await {
-            Ok(result) => result,
-            Err(err) => {
-                log::error!("failed to query: {:?}", err);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
+    let mut result = match stmt.query(params![&id]) {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("failed to query: {:?}", err);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
-    // validate query result
-    if result.is_empty() {
-        log::error!("metadata not found: id={}", id);
-        return Err(StatusCode::NOT_FOUND);
-    } else if result.len() != 1 {
-        log::error!("multiple metadata returned: id={}", id);
+    let row = result
+        .next()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // get returned id
+    let row = if let Some(row) = row {
+        row
+    } else {
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
+    };
 
-    let result = &result[0];
-    if result.len() != 6 {
-        log::error!("invalid column length: {}", result.len());
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    let filename: Vec<u8> = result.get(0);
-    let salt: Vec<u8> = result.get(1);
-    let nonce: Vec<u8> = result.get(2);
-    let filename_nonce: Vec<u8> = result.get(3);
-    let is_text: bool = result.get(4);
-    let size: i64 = result.get(5);
+    let filename: Vec<u8> = row.get(0).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let salt: Vec<u8> = row.get(1).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let nonce: Vec<u8> = row.get(2).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let filename_nonce: Vec<u8> = row.get(3).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let is_text: bool = row.get(4).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let size: i64 = row.get(5).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(MetadataResp {
         filename,
@@ -493,99 +433,78 @@ pub async fn download(
     // prepare sender
     let (mut sender, body) = Body::channel();
 
-    tokio::spawn(async move {
-        let pool = &state.0.pool;
+    let conn = &mut state.0.conn.lock().await;
 
-        let client = {
-            match pool.get().await {
-                Ok(client) => client,
-                Err(err) => {
-                    log::error!("could not get client from pool: {:?}", err);
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
+    // prepare statement
+    let query = "select seq from file_contents where file_id = ?1 order by seq desc limit 1";
+    let mut stmt = {
+        match conn.prepare(query) {
+            Ok(stmt) => stmt,
+            Err(err) => {
+                log::error!("could not prepare statement: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
-        };
+        }
+    };
 
+    // query last seq
+    let mut result = match stmt.query(params![&id]) {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("failed to query: {:?}", err);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let row = result
+        .next()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let row = if let Some(row) = row {
+        row
+    } else {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+
+    // extract last_seq
+    let last_seq: i64 = row.get(0).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut contents = Vec::with_capacity(last_seq as usize);
+
+    for seq in 1..=last_seq {
         // prepare statement
-        let query = "select seq from file_contents where file_id = $1 order by seq desc limit 1";
-        let stmt = {
-            match client.prepare(query).await {
-                Ok(stmt) => stmt,
-                Err(err) => {
-                    log::error!("could not prepare statement: {:?}", err);
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
+        let query = "select content from file_contents where file_id = ?1 and seq = ?2";
+        let mut stmt = match conn.prepare(query) {
+            Ok(stmt) => stmt,
+            Err(err) => {
+                log::error!("could not prepare statement: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
+        // query file
+        let mut result = match stmt.query(params![&id, &seq]) {
+            Ok(result) => result,
+            Err(err) => {
+                log::error!("failed to query: {:?}", err);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         };
 
-        // query last seq
-        let result = {
-            match client.query(&stmt, &[&id]).await {
-                Ok(result) => result,
-                Err(err) => {
-                    log::error!("failed to query: {:?}", err);
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
-            }
+        let row = result
+            .next()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let row = if let Some(row) = row {
+            row
+        } else {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         };
-        // validate query result
-        if result.is_empty() {
-            log::error!("file or last seq not found: id={}", id);
-            return Err(StatusCode::NOT_FOUND);
-        } else if result.len() != 1 {
-            log::error!("multiple rows returned: id={}", id);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
 
-        let result = &result[0];
-        if result.len() != 1 {
-            log::error!("invalid column length: {}", result.len());
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
+        // extract fields
+        let content: Vec<u8> = row.get(0).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        contents.push((seq, content));
+    }
 
-        // extract last_seq
-        let last_seq: i64 = result.get(0);
-
-        for seq in 1..=last_seq {
-            // prepare statement
-            let query = "select content from file_contents where file_id = $1 and seq = $2";
-            let stmt = {
-                match client.prepare(query).await {
-                    Ok(stmt) => stmt,
-                    Err(err) => {
-                        log::error!("could not prepare statement: {:?}", err);
-                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                    }
-                }
-            };
-            // query file
-            let result = {
-                match client.query(&stmt, &[&id, &seq]).await {
-                    Ok(result) => result,
-                    Err(err) => {
-                        log::error!("failed to query: {:?}", err);
-                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                    }
-                }
-            };
-            // validate query result
-            if result.is_empty() {
-                log::error!("chunk not found: id={}, seq={}", id, seq);
-                return Err(StatusCode::NOT_FOUND);
-            } else if result.len() != 1 {
-                log::error!("multiple chunk returned: id={}, seq={}", id, seq);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-
-            let result = &result[0];
-            if result.len() != 1 {
-                log::error!("invalid column length: {}", result.len());
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-
-            // extract fields
-            let content: Vec<u8> = result.get(0);
-
+    tokio::spawn(async move {
+        for (seq, content) in contents {
             match sender.send_data(Bytes::from(content)).await {
                 Ok(_) => {}
                 Err(e) => {

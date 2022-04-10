@@ -4,11 +4,11 @@ use axum::{
     handler::{get, post},
     AddExtensionLayer, Router,
 };
-use deadpool_postgres::Config;
+use rusqlite::Connection;
 use simple_logger::SimpleLogger;
 use state::State;
 use structopt::StructOpt;
-use tokio_postgres::NoTls;
+use tokio::sync::Mutex;
 use tower_http::trace::TraceLayer;
 
 mod config;
@@ -26,18 +26,14 @@ async fn main() {
         .unwrap();
     let config = config::Config::from_args();
 
-    // setup database connetion pool
-    let mut db_config = Config::new();
-    db_config.host = Some(config.postgres_host.clone());
-    db_config.port = Some(config.postgres_port);
-    db_config.user = Some(config.postgres_user.clone());
-    db_config.password = Some(config.postgres_password.clone());
-    db_config.dbname = Some(config.postgres_dbname.clone());
-
-    let pool = db_config.create_pool(NoTls).unwrap();
+    // setup database connetion
+    let conn = Connection::open(config.sqlite_db_filename.clone()).unwrap();
+    let bootstrap_sql = include_str!("../schema.sql");
+    conn.execute_batch(bootstrap_sql).unwrap();
+    let conn = Mutex::new(conn);
 
     let shared_state = Arc::new(State {
-        pool,
+        conn,
         config: config.clone(),
     });
     let worker_state = shared_state.clone();
