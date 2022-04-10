@@ -20,6 +20,7 @@ mod workers;
 #[tokio::main]
 async fn main() {
     SimpleLogger::new()
+        .with_utc_timestamps()
         .with_level(log::LevelFilter::Info)
         .init()
         .unwrap();
