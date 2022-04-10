@@ -29,7 +29,7 @@ pub async fn delete_expired(state: Arc<State>, config: Config) {
         {
             // prepare statement
             let query =
-                "delete from files where (now() > created_at + ?1 * interval '1' second) returning id";
+                "delete from files where (current_timestamp > created_at + ?1) returning id";
             let mut stmt = match tx.prepare(query) {
                 Ok(stmt) => stmt,
                 Err(err) => {
