@@ -25,6 +25,7 @@ You need `cargo` to build server. If you don't have it, follow the instructions 
 cd ./server
 cargo build --release
 ```
+Hako uses simple SQLite database to store your encrypted files and metadata. So no external database setting is required, but you may give database file path by argument or environment variable. See [here](https://github.com/skystar-p/hako/blob/b8bed17019232452d8ca98ff9a0ae20521af02e1/server/src/config.rs#L9).
 
 ### Frontend
 You need two additional tools: [`trunk`](https://trunkrs.dev/) and [`tailwindcss`](https://tailwindcss.com/).
