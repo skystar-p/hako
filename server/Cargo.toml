@@ -7,6 +7,7 @@ edition = "2018"
 axum = { version = "0.5.1", features = ["multipart"] }
 base64 = "0.13.0"
 futures = "0.3.21"
+include_dir = "0.7.2"
 log = "0.4.16"
 rusqlite = { version = "0.27.0", features = ["bundled"] }
 serde = { version = "1.0.136", features = ["derive"] }
