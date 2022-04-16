@@ -1,14 +1,15 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
-    handler::{get, post},
-    AddExtensionLayer, Router,
+    routing::{get, post},
+    Extension, Router,
 };
 use rusqlite::Connection;
 use simple_logger::SimpleLogger;
 use state::State;
 use structopt::StructOpt;
 use tokio::sync::Mutex;
+use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 
 mod config;
@@ -44,8 +45,11 @@ async fn main() {
         .route("/api/ping", get(handlers::ping))
         .route("/api/prepare_upload", post(handlers::prepare_upload))
         .route("/api/upload", post(handlers::upload))
-        .layer(TraceLayer::new_for_http())
-        .layer(AddExtensionLayer::new(shared_state));
+        .layer(
+            ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+                .layer(Extension(shared_state)),
+        );
 
     let addr: SocketAddr = config.bind_addr.parse().expect("invalid bind addr");
 

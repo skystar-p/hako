@@ -1,10 +1,10 @@
 use std::{collections::HashMap, convert::TryInto, sync::Arc};
 
 use axum::{
-    body::{Body, Bytes},
+    body::{Body, Bytes, StreamBody},
     extract::{ContentLengthLimit, Extension, Multipart, Query},
     http::StatusCode,
-    response::Json,
+    response::{IntoResponse, Json},
 };
 use rusqlite::params;
 use serde::Serialize;
@@ -26,7 +26,7 @@ pub struct PrepareUploadResp {
 pub async fn prepare_upload(
     state: Extension<Arc<State>>,
     mut multipart: ContentLengthLimit<Multipart, PREPARE_LENGTH_LIMIT>,
-) -> Result<Json<PrepareUploadResp>, StatusCode> {
+) -> impl IntoResponse {
     let mut salt: Option<Bytes> = None;
     let mut nonce: Option<Bytes> = None;
     let mut filename_nonce: Option<Bytes> = None;
@@ -171,7 +171,7 @@ const UPLOAD_LENGTH_LIMIT: u64 = 100 * 1024 * 1024;
 pub async fn upload(
     state: Extension<Arc<State>>,
     mut multipart: ContentLengthLimit<Multipart, UPLOAD_LENGTH_LIMIT>,
-) -> Result<&'static str, StatusCode> {
+) -> impl IntoResponse {
     let mut id: Option<Bytes> = None;
     let mut seq: Option<Bytes> = None;
     let mut is_last: Option<Bytes> = None;
@@ -333,7 +333,7 @@ pub struct MetadataResp {
 pub async fn metadata(
     state: Extension<Arc<State>>,
     Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<MetadataResp>, StatusCode> {
+) -> impl IntoResponse {
     let id = params.get("id").cloned();
 
     let id = match id {
@@ -384,7 +384,8 @@ pub async fn metadata(
     let row = if let Some(row) = row {
         row
     } else {
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        log::error!("metadata not found: id={}", id);
+        return Err(StatusCode::NOT_FOUND);
     };
 
     let filename: Vec<u8> = row.get(0).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -407,7 +408,7 @@ pub async fn metadata(
 pub async fn download(
     state: Extension<Arc<State>>,
     Query(params): Query<HashMap<String, String>>,
-) -> Result<Body, StatusCode> {
+) -> impl IntoResponse {
     let id = params.get("id").cloned();
 
     let id = match id {
@@ -523,5 +524,5 @@ pub async fn download(
         Ok(())
     });
 
-    Ok(body)
+    Ok(StreamBody::new(body))
 }
