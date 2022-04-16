@@ -45,6 +45,7 @@ async fn main() {
         .route("/api/ping", get(handlers::ping))
         .route("/api/prepare_upload", post(handlers::prepare_upload))
         .route("/api/upload", post(handlers::upload))
+        .fallback(get(handlers::static_files))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())

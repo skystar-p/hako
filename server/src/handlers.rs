@@ -3,9 +3,10 @@ use std::{collections::HashMap, convert::TryInto, sync::Arc};
 use axum::{
     body::{Body, Bytes, StreamBody},
     extract::{ContentLengthLimit, Extension, Multipart, Query},
-    http::StatusCode,
+    http::{header::CONTENT_TYPE, HeaderMap, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Json},
 };
+use include_dir::{include_dir, Dir};
 use rusqlite::params;
 use serde::Serialize;
 
@@ -525,4 +526,101 @@ pub async fn download(
     });
 
     Ok(StreamBody::new(body))
+}
+
+static STATIC_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../webapp/dist");
+const INDEX_FILENAME: &str = "index.html";
+
+pub async fn static_files(uri: Uri) -> impl IntoResponse {
+    let filename = uri.path().trim_matches('/').to_string();
+
+    if filename.len() > 1000 {
+        // ignore too long filename
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // if given path is numeric, then return index file
+    if let Ok(file_id) = filename.parse::<i64>() {
+        if file_id <= 0 {
+            log::error!("invalid id {}: should be positive", file_id);
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        return try_return_file(INDEX_FILENAME.to_owned());
+    }
+
+    // if empty path, then return index file
+    if filename.is_empty() {
+        return try_return_file(INDEX_FILENAME.to_owned());
+    }
+
+    try_return_file(filename)
+}
+
+fn try_return_file(filename: String) -> Result<impl IntoResponse, StatusCode> {
+    let mut headers = HeaderMap::new();
+
+    if !filename.contains('.') {
+        // if no extension, then return NOT_FOUND
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // extract file extension
+    let ext = if let Some(ext) = filename.rsplit_once('.').map(|x| x.1) {
+        ext.to_lowercase()
+    } else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+
+    match ext.as_str() {
+        "html" => {
+            // if html, then return text/html
+            headers.insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            );
+        }
+        "js" => {
+            // if js, then return application/javascript
+            headers.insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static("application/javascript; charset=utf-8"),
+            );
+        }
+        "css" => {
+            // if css, then return text/css
+            headers.insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static("text/css; charset=utf-8"),
+            );
+        }
+        "png" => {
+            // if png, then return image/png
+            headers.insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static("image/png; charset=utf-8"),
+            );
+        }
+        "jpg" => {
+            // if jpg, then return image/jpeg
+            headers.insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static("image/jpeg; charset=utf-8"),
+            );
+        }
+        "wasm" => {
+            // if wasm, then return application/wasm
+            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/wasm"));
+        }
+        _ => {
+            // if unknown, then return NOT_FOUND
+            return Err(StatusCode::NOT_FOUND);
+        }
+    };
+
+    if let Some(file) = STATIC_DIR.get_file(&filename) {
+        Ok((headers, file.contents()))
+    } else {
+        log::error!("static file not found: {}", filename);
+        Err(StatusCode::NOT_FOUND)
+    }
 }
