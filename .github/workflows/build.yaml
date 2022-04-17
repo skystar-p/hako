@@ -60,3 +60,8 @@ jobs:
           use-cross: true
           command: build
           args: --release --target=${{ matrix.target }} --manifest-path server/Cargo.toml
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: hako-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/hako
