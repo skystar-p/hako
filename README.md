@@ -6,6 +6,7 @@ Simple file sharing with client-side encryption, powered by Rust and WebAssembly
 Not feature-packed, but basic functionalities are just working. Feature requests and PR are very welcome.
 
 ## Features
+* No external database setup and file-serving proxy needed. (Hako uses SQLite and bundles all frontend assets in its binary)
 * Handy file sharing
 * Handy text-snippet sharing
 * Client-side encryption using `XChacha20Poly1305`
@@ -48,18 +49,33 @@ Hako uses simple SQLite database to store your encrypted files and metadata. So 
 
 
 ## Run
-Serving Hako application is dead simple. No additional file-serving proxy needed. Just run your Hako server binary behind of HTTP proxy to take advantage of TLS.  
+Serving Hako application is dead simple. No additional file-serving proxy and external database setup is needed. Just run your Hako server binary behind of HTTP proxy to take advantage of TLS.  
 You can check configuration info by running:
 ```sh
 ./hako --help
+```
+
+Running Hako application is just simple as:
+```sh
+./hako
+
+# ... and open http://localhost:12321/ on your browser.
+```
+
+If you want to serve Hako in public, serving behind of reverse-proxy with TLS is strongly recommended.
+
+You can use [Caddy](https://caddyserver.com/) for easy TLS configuration. Example Caddy configuration:
+```
+your-domain.com {
+    handle * {
+        reverse_proxy localhost:12322
+    }
+}
 ```
 
 ## To-dos
 * Authentication
     * WebAuthn
     * or just plain username-password pair
-* File expiry, download limit
-    * Or just LRU
-* Performance gain using Web Worker
 * CLI tool
     * WASM can provide compatibility among various environment, and CLI downloader will provide good performance
