@@ -33,6 +33,9 @@ jobs:
           target: ${{ matrix.target }}
           override: true
 
+      # rust-cache
+      - uses: Swatinem/rust-cache@v1
+
       - uses: actions/setup-node@v3
         with:
           node-version: '16'
