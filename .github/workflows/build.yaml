@@ -5,6 +5,8 @@ on:
     branches:
       - "main"
       - "actions"
+    tags:
+      - "v*"
 
 jobs:
   build:
