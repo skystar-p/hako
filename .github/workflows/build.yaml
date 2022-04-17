@@ -18,6 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      # install wasm toolchain
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: "wasm32-unknown-unknown"
+
+      # install toolchain of current target
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
