@@ -68,7 +68,7 @@ You can use [Caddy](https://caddyserver.com/) for easy TLS configuration. Exampl
 ```
 your-domain.com {
     handle * {
-        reverse_proxy localhost:12322
+        reverse_proxy localhost:12321
     }
 }
 ```
