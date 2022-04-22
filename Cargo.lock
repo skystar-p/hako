@@ -550,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "hako"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64",
@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "hako_webapp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "aead",
  "base64",
