@@ -289,7 +289,7 @@ pub async fn upload(
 
     if is_last {
         // prepare statement
-        let query = "update files set upload_complete = true where id = ?1";
+        let query = "update files set available = true where id = ?1";
         let mut stmt = {
             match tx.prepare(query) {
                 Ok(stmt) => stmt,
@@ -360,7 +360,7 @@ pub async fn metadata(
     let conn = &mut state.0.conn.lock().await;
 
     // prepare statement
-    let query = "select filename, salt, nonce, filename_nonce, is_text, (select sum(length(content)) from file_contents where file_id = ?1) from files where id = ?1 and upload_complete = true";
+    let query = "select filename, salt, nonce, filename_nonce, is_text, (select sum(length(content)) from file_contents where file_id = ?1) from files where id = ?1 and available = true";
     let mut stmt = match conn.prepare(query) {
         Ok(stmt) => stmt,
         Err(err) => {

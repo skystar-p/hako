@@ -6,7 +6,7 @@ create table if not exists files (
     nonce blob not null,
     filename_nonce blob not null,
     is_text boolean not null default false,
-    upload_complete boolean not null default false
+    available boolean not null default false
 );
 
 create table if not exists file_contents (
