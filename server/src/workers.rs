@@ -6,12 +6,14 @@ use crate::{config::Config, state::State};
 
 pub async fn delete_expired(state: Arc<State>, config: Config) {
     if config.expiry.unwrap_or(0) == 0 {
+        log::info!("expiry not specified. expiry worker will not run");
         return;
     }
     let expiry = config.expiry.unwrap() as f64;
 
     let mut interval = tokio::time::interval(Duration::from_secs(config.delete_interval));
 
+    log::info!("starting expiry worker...");
     loop {
         interval.tick().await;
 

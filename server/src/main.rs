@@ -57,6 +57,7 @@ async fn main() {
     // start worker
     tokio::spawn(workers::delete_expired(worker_state, config));
 
+    log::info!("starting server at {}...", addr.to_string());
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
