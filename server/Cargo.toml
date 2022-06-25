@@ -6,6 +6,7 @@ edition = "2018"
 [dependencies]
 axum = { version = "0.5.1", features = ["multipart"] }
 base64 = "0.13.0"
+clap = { version = "3.2.6", features = ["derive", "env"] }
 futures = "0.3.21"
 include_dir = "0.7.2"
 log = "0.4.16"
@@ -13,7 +14,6 @@ rusqlite = { version = "0.27.0", features = ["bundled"] }
 serde = { version = "1.0.136", features = ["derive"] }
 serde_json = "1.0.79"
 simple_logger = "2.1.0"
-structopt = "0.3.26"
 tokio = { version = "1.17.0", features = ["full"] }
 tower = "0.4.12"
 tower-http = { version = "0.2.5", features = ["trace"] }

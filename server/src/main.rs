@@ -4,10 +4,10 @@ use axum::{
     routing::{get, post},
     Extension, Router,
 };
+use clap::Parser;
 use rusqlite::Connection;
 use simple_logger::SimpleLogger;
 use state::State;
-use structopt::StructOpt;
 use tokio::sync::Mutex;
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
@@ -25,7 +25,7 @@ async fn main() {
         .with_level(log::LevelFilter::Info)
         .init()
         .unwrap();
-    let config = config::Config::from_args();
+    let config = config::Config::parse();
 
     // setup database connetion
     let conn = Connection::open(config.sqlite_db_filename.clone()).unwrap();

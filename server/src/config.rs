@@ -1,19 +1,18 @@
-use structopt::StructOpt;
-
-#[derive(Debug, Clone, StructOpt)]
+#[derive(clap::Parser, Debug, Clone)]
+#[clap(author, version, about)]
 pub struct Config {
-    #[structopt(long, default_value = "127.0.0.1:12321", env)]
+    #[clap(long, env, default_value = "127.0.0.1:12321")]
     pub bind_addr: String,
 
-    #[structopt(long, default_value = "hako.db", env)]
+    #[clap(long, env, default_value = "hako.db")]
     pub sqlite_db_filename: String,
 
-    #[structopt(long, env)]
+    #[clap(long, env)]
     pub expiry: Option<usize>,
 
-    #[structopt(long, default_value = "60", env)]
+    #[clap(long, env, default_value = "60")]
     pub delete_interval: u64,
 
-    #[structopt(long, default_value = "128", env)]
+    #[clap(long, env, default_value = "128")]
     pub chunk_count_limit: u64,
 }
