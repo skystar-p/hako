@@ -31,7 +31,7 @@ pub async fn delete_expired(state: Arc<State>, config: Config) {
         {
             // prepare statement
             let query =
-                "delete from files where (unixepoch(current_timestamp) > unixepoch(created_at) + ?1) returning id";
+                "delete from file_contents where file_id in (select id from files where (unixepoch(current_timestamp) > unixepoch(created_at) + ?1)) returning file_id";
             let mut stmt = match tx.prepare(query) {
                 Ok(stmt) => stmt,
                 Err(err) => {
@@ -51,11 +51,39 @@ pub async fn delete_expired(state: Arc<State>, config: Config) {
                 }
             };
 
+            // get deleted file ids
+            let mut file_ids = Vec::new();
             while let Some(row) = rows.next().map_or(None, |row| row) {
                 let id: Option<i64> = row.get(0).ok();
                 if let Some(id) = id {
-                    log::info!("deleted expired file id: {}", id);
+                    file_ids.push(id);
                 }
+            }
+
+            // remove all duplicate file ids
+            file_ids.sort();
+            file_ids.dedup();
+
+            // update available field for each file row
+            for file_id in file_ids {
+                let query = "update files set available = false where id = ?1";
+                let mut stmt = {
+                    match tx.prepare(query) {
+                        Ok(stmt) => stmt,
+                        Err(err) => {
+                            log::error!("could not prepare statement: {:?}", err);
+                            continue;
+                        }
+                    }
+                };
+
+                // update row
+                let result = stmt.execute(params![&file_id]);
+                if let Err(err) = result {
+                    log::error!("failed to query: {:?}", err);
+                    continue;
+                }
+                log::info!("deleted expired file: id {}", file_id);
             }
         }
 
