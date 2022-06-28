@@ -35,6 +35,8 @@ jobs:
 
       # rust-cache
       - uses: Swatinem/rust-cache@v1
+        with:
+          key: "v1.1.3-workaround"
 
       - uses: actions/setup-node@v3
         with:
