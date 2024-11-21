@@ -22,6 +22,7 @@
           nativeBuildInputs = with pkgs; [
             rust-toolchain
             trunk
+            tailwindcss
           ];
         };
       }

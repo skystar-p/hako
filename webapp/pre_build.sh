@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 if [ ! -f "./asset.css" ]; then
     tailwindcss -o ./asset.css
